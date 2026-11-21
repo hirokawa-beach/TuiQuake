@@ -3,12 +3,14 @@ use std::fmt::Write;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
-    data::{Bulletin, INTENSITIES, Level, Report, Result},
+    data::{Bulletin, ForecastArea, INTENSITIES, Level, Observation, Report, Result},
     graphics::{self, Image, Map},
     map::{
         self, Atlas, Color, Layer, PALETTE, Raster, Rgb, TEXT_CELL_HEIGHT, TEXT_CELL_WIDTH, View,
     },
 };
+
+use crate::settings::StationGrouping;
 
 pub const MIN_SPLIT_WIDTH: usize = 58;
 pub const APP_NAME: &str = "TuiQuake";
@@ -71,6 +73,7 @@ pub struct History<'a> {
     pub reports: &'a [Report],
     pub selected: usize,
     pub status: &'a str,
+    pub row_limit: usize,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -86,6 +89,7 @@ pub struct Scene<'a> {
     pub series: &'a [Bulletin],
     pub view: View,
     pub layer: Layer,
+    pub station_grouping: StationGrouping,
     pub controls: &'a [String],
     pub history: Option<History<'a>>,
     pub menu: &'a [String],
@@ -102,6 +106,7 @@ impl<'a> Scene<'a> {
             series: &[],
             view: View::new(national),
             layer: Layer::Stations,
+            station_grouping: StationGrouping::default(),
             controls: &[],
             history: None,
             menu: &[],
@@ -346,28 +351,119 @@ fn observation_label(layer: Layer) -> &'static str {
     }
 }
 
-fn readings(b: &Bulletin, layer: Layer) -> Vec<(String, map::Rgb)> {
-    let list = match layer {
-        Layer::Regions => &b.regions,
-        Layer::Stations => &b.stations,
+fn reading_rgb(level: &Level) -> Rgb {
+    level
+        .index()
+        .map_or(INK, |i| PALETTE[(map::STATION + i) as usize])
+}
+
+fn reading_row(item: &Observation) -> (String, Rgb) {
+    let label = short_intensity_label(&item.level);
+    let (level, note) = if label.width() <= 2 {
+        (label, String::new())
+    } else {
+        ("—", format!("  （{label}）"))
     };
-    list.iter()
-        .map(|item| {
-            let label = short_intensity_label(&item.level);
-            let (level, note) = if label.width() <= 2 {
-                (label, String::new())
-            } else {
-                ("—", format!("  （{label}）"))
-            };
-            let inset = " ".repeat(2 - level.width());
-            (
-                format!("{inset}{level}  {}{note}", item.name),
-                item.level
-                    .index()
-                    .map_or(INK, |i| PALETTE[(map::STATION + i) as usize]),
-            )
-        })
-        .collect()
+    let inset = " ".repeat(2 - level.width());
+    (
+        format!("{inset}{level}  {}{note}", item.name),
+        reading_rgb(&item.level),
+    )
+}
+
+fn station_groups(b: &Bulletin, grouping: StationGrouping) -> Vec<(&str, Vec<&Observation>)> {
+    const UNKNOWN: &str = "都道府県不明";
+    let mut groups: Vec<(&str, Vec<&Observation>)> = Vec::new();
+    // Observation order is already strongest first, including within groups.
+    for station in &b.stations {
+        let label = match grouping {
+            StationGrouping::Prefecture => station.prefecture.as_deref().unwrap_or(UNKNOWN),
+            StationGrouping::Intensity => short_intensity_label(&station.level),
+        };
+        if let Some((_, stations)) = groups.iter_mut().find(|(name, _)| *name == label) {
+            stations.push(station);
+        } else {
+            groups.push((label, vec![station]));
+        }
+    }
+    if grouping == StationGrouping::Prefecture {
+        groups.sort_by_key(|(label, _)| *label == UNKNOWN);
+    }
+    groups
+}
+
+fn station_heading(label: &str, first: &Observation, grouping: StationGrouping) -> (String, Rgb) {
+    match grouping {
+        StationGrouping::Prefecture => (format!("── {label}"), ACCENT),
+        StationGrouping::Intensity if first.level.index().is_some() => {
+            (format!("── 震度 {label}"), reading_rgb(&first.level))
+        }
+        StationGrouping::Intensity => (format!("── {label}"), MUTED),
+    }
+}
+
+fn station_reading_row(station: &Observation, grouping: StationGrouping) -> (String, Rgb) {
+    match grouping {
+        StationGrouping::Prefecture => reading_row(station),
+        StationGrouping::Intensity => (station.name.clone(), INK),
+    }
+}
+
+fn readings(b: &Bulletin, layer: Layer, grouping: StationGrouping) -> Vec<(String, Rgb)> {
+    match layer {
+        Layer::Regions => b.regions.iter().map(reading_row).collect(),
+        Layer::Stations => station_groups(b, grouping)
+            .into_iter()
+            .flat_map(|(label, stations)| {
+                std::iter::once(station_heading(label, stations[0], grouping)).chain(
+                    stations
+                        .into_iter()
+                        .map(|station| station_reading_row(station, grouping)),
+                )
+            })
+            .collect(),
+    }
+}
+
+fn station_readings_window(
+    b: &Bulletin,
+    grouping: StationGrouping,
+    start: usize,
+    slots: usize,
+) -> (String, Vec<(String, Rgb)>) {
+    let count = b.stations.len();
+    let groups = station_groups(b, grouping);
+    let start = if count + groups.len() <= slots {
+        0
+    } else {
+        start.min(count.saturating_sub(1))
+    };
+    let mut skip = start;
+    let mut title = match grouping {
+        StationGrouping::Prefecture => "各地の震度 · 観測点",
+        StationGrouping::Intensity => "観測点 · 震度別",
+    }
+    .to_owned();
+    let mut rows = Vec::new();
+    let mut shown = 0;
+    for (label, stations) in groups {
+        if skip >= stations.len() {
+            skip -= stations.len();
+            continue;
+        }
+        if slots - rows.len() < 2 {
+            break;
+        }
+        rows.push(station_heading(label, stations[skip], grouping));
+        let visible = stations.into_iter().skip(skip).take(slots - rows.len());
+        shown += visible.len();
+        rows.extend(visible.map(|station| station_reading_row(station, grouping)));
+        skip = 0;
+    }
+    if shown < count {
+        write!(title, "  {}–{}/{count}", start + 1, start + shown).unwrap();
+    }
+    (title, rows)
 }
 
 impl History<'_> {
@@ -379,8 +475,16 @@ impl History<'_> {
         }
     }
 
+    fn target_height(&self) -> usize {
+        self.row_limit + 3
+    }
+
     fn frame(self, border: Border, height: usize) -> Vec<String> {
-        let title = self.title();
+        let height = height.min(self.target_height());
+        let mut title = self.title();
+        if height == 3 && !self.reports.is_empty() && !self.status.is_empty() {
+            write!(title, " · {}", self.status).unwrap();
+        }
         let lines = history_lines(
             self,
             border.width - TEXT_FRAME_MARGIN,
@@ -389,6 +493,14 @@ impl History<'_> {
         );
         border.text(lines, &title, height)
     }
+
+    fn bottom_frame(self, border: Border, height: usize) -> Vec<String> {
+        let panel = self.frame(border, height);
+        std::iter::repeat_with(String::new)
+            .take(height - panel.len())
+            .chain(panel)
+            .collect()
+    }
 }
 
 fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) -> Vec<String> {
@@ -396,9 +508,10 @@ fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) ->
         reports,
         selected,
         status,
+        row_limit,
     } = history;
     let mut out = Vec::new();
-    if !status.is_empty() {
+    if !status.is_empty() && (rows > 1 || reports.is_empty()) {
         out.push(color(&fit(status, width), MUTED, ansi));
     }
     if reports.is_empty() {
@@ -418,8 +531,10 @@ fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) ->
         ),
         if show_mag { "M     " } else { "" }
     );
-    out.push(color(&fit(&header, width), MUTED, ansi));
-    let count = rows.saturating_sub(out.len());
+    if rows > out.len() + 1 {
+        out.push(color(&fit(&header, width), MUTED, ansi));
+    }
+    let count = rows.saturating_sub(out.len()).min(row_limit);
     let start = selected
         .saturating_sub(count / 2)
         .min(reports.len().saturating_sub(count));
@@ -626,6 +741,93 @@ pub fn panel(
         controls.into()
     };
     text.push(fit(&keys, width));
+    Frame {
+        text: text.join("\n"),
+        ..Frame::default()
+    }
+}
+
+pub fn settings(
+    menu: &[String],
+    entries: &[(&str, &str)],
+    selected: usize,
+    dirty: bool,
+    active_map: Option<&str>,
+    notice: Option<(&str, bool)>,
+    display: Display,
+) -> Frame {
+    let width = display.width().min(64);
+    let inner = width - TEXT_FRAME_MARGIN;
+    let on_save = selected == entries.len();
+    let value_key = if on_save {
+        ("Enter", "保存して適用")
+    } else {
+        ("←→", "値を変更")
+    };
+    let back = if dirty {
+        "変更を破棄して戻る"
+    } else {
+        "戻る"
+    };
+    let controls = control_lines(
+        "操作",
+        &[("↑↓", "選ぶ"), value_key, ("S", "保存"), ("Esc", back)],
+        display,
+    );
+    let capacity = display.rows.saturating_sub(menu.len() + controls.len() + 2);
+    let row_count = capacity.min(entries.len() + 1);
+    let start = (selected + 1).saturating_sub(row_count);
+    let mut rows = Vec::new();
+    for index in (start..entries.len() + 1).take(row_count) {
+        let active = index == selected;
+        let marker = if active { '▸' } else { ' ' };
+        let line = if let Some((label, value)) = entries.get(index) {
+            let label_width = if inner >= 38 { 18 } else { label.width() };
+            let value = if active {
+                format!("‹ {value} ›")
+            } else {
+                format!("  {value}")
+            };
+            format!("{marker} {}  {value}", pad(label, label_width))
+        } else {
+            format!("{marker} [ 保存して適用 ]")
+        };
+        let line = fit(&line, inner);
+        if active && display.colors {
+            let mut styled = String::new();
+            map::rgb(&mut styled, SELECTED, true);
+            styled.push_str(&color(&pad(&line, inner), INK, true));
+            rows.push(styled);
+        } else {
+            let rgb = if index == entries.len() { ACCENT } else { INK };
+            rows.push(color(&line, rgb, display.colors));
+        }
+    }
+    if let Some((message, alert)) = notice {
+        rows.extend(
+            wrap(message, inner)
+                .into_iter()
+                .take(capacity.saturating_sub(rows.len()))
+                .map(|line| color(&line, if alert { ALERT } else { ACCENT }, display.colors)),
+        );
+    } else if let Some(active_map) = active_map
+        && rows.len() < capacity
+    {
+        rows.push(color(
+            &fit(&format!("使用中の描画方式  {active_map}"), inner),
+            MUTED,
+            display.colors,
+        ));
+    }
+    let title = if dirty {
+        "設定 · 未保存"
+    } else {
+        "設定"
+    };
+    let height = rows.len() + 2;
+    let mut text = menu.to_vec();
+    text.extend(Border::new(width, FRAME, display.colors).text(rows, title, height));
+    text.extend(controls);
     Frame {
         text: text.join("\n"),
         ..Frame::default()
@@ -1049,49 +1251,58 @@ fn earthquake_sidebar(
     notices: QuakeNotices,
     history: History<'_>,
     layer: Layer,
+    grouping: StationGrouping,
     start: usize,
     width: usize,
     rows: usize,
     ansi: bool,
 ) -> Vec<String> {
     let border = Border::new(width, FRAME, ansi);
-    let minimum_history = 4 + usize::from(!history.status.is_empty());
-    if rows < minimum_history + 6 {
-        return history.frame(border, rows);
+    const MIN_HISTORY: usize = 3;
+    if rows < MIN_HISTORY + 7 {
+        return history.bottom_frame(border, rows);
     }
 
     let inner = width - TEXT_FRAME_MARGIN;
-    let summary_rows = (rows - minimum_history - 5).min(8);
+    let summary_rows = (rows - MIN_HISTORY - 6).min(8);
     let facts = earthquake_summary(b, notices, inner, summary_rows, ansi);
     let summary_height = summary_rows + 2;
     let mut lines = border.text(facts, "地震の概要", summary_height);
 
-    let entries = readings(b, layer);
-    let slots = (rows - summary_height - minimum_history - 2)
-        .div_ceil(3)
-        .clamp(1, 8);
-    let count = entries.len();
-    let start = if count <= slots {
-        0
-    } else {
-        start.min(count - 1)
+    let shared_rows = rows - summary_height - 2;
+    let history_height = history.target_height().min(shared_rows - 2);
+    let slots = shared_rows - history_height;
+    let (title, entries) = match layer {
+        Layer::Stations => station_readings_window(b, grouping, start, slots),
+        Layer::Regions => {
+            let count = b.regions.len();
+            let start = if count <= slots {
+                0
+            } else {
+                start.min(count - 1)
+            };
+            let end = (start + slots).min(count);
+            let mut title = format!("各地の震度 · {}", layer.label());
+            if count > slots {
+                write!(title, "  {}–{end}/{count}", start + 1).unwrap();
+            }
+            (
+                title,
+                b.regions[start..end].iter().map(reading_row).collect(),
+            )
+        }
     };
-    let end = (start + slots).min(count);
-    let mut title = format!("各地の震度 · {}", layer.label());
-    if count > slots || start > 0 {
-        write!(title, "  {}–{end}/{count}", start + 1).unwrap();
-    }
     let readings = if entries.is_empty() {
         vec![color(&fit("震度データなし", inner), MUTED, ansi)]
     } else {
-        entries[start..end]
+        entries
             .iter()
             .map(|(line, rgb)| color(&fit(line, inner), *rgb, ansi))
             .collect()
     };
     let readings_height = slots + 2;
     lines.extend(Border::new(width, FRAME_ALERT, ansi).text(readings, &title, readings_height));
-    lines.extend(history.frame(border, rows - lines.len()));
+    lines.extend(history.frame(border, history_height));
     lines
 }
 
@@ -1270,8 +1481,60 @@ fn eew_overview(
         .text(content, &title, used)
 }
 
-fn eew_warning_areas(
-    areas: &[String],
+fn eew_area_entries(b: &Bulletin) -> Option<(&'static str, Vec<(String, Rgb)>)> {
+    if !b.warning && b.forecast_areas.is_empty() {
+        return None;
+    }
+    let title = if b.warning && b.forecast_areas.is_empty() {
+        "警報対象地域"
+    } else if b.warning {
+        "警報対象地域 · 予想震度"
+    } else {
+        "地域別の予想震度"
+    };
+    let mut rows = Vec::new();
+    for name in &b.warning_areas {
+        if let Some(area) = b.forecast_areas.iter().find(|area| area.name == *name) {
+            rows.push(eew_prediction_row(area, false));
+        } else {
+            rows.push((name.clone(), INK));
+        }
+    }
+    rows.extend(
+        b.forecast_areas
+            .iter()
+            .filter(|area| !b.warning_areas.contains(&area.name))
+            .map(|area| eew_prediction_row(area, b.warning)),
+    );
+    Some((title, rows))
+}
+
+fn eew_prediction_row(area: &ForecastArea, forecast_only: bool) -> (String, Rgb) {
+    let lower = area.minimum.as_ref().map(short_intensity_label);
+    let upper = area.maximum.as_ref().map(short_intensity_label);
+    let range = match (lower, upper) {
+        (Some(low), Some(high)) if low == high => low.to_owned(),
+        (Some(low), Some(high)) => format!("{low}〜{high}"),
+        (Some(low), None) => format!("下限 {low}"),
+        (None, Some(high)) => format!("上限 {high}"),
+        (None, None) => "不明".into(),
+    };
+    let rgb = area
+        .maximum
+        .as_ref()
+        .or(area.minimum.as_ref())
+        .map_or(INK, reading_rgb);
+    let flag = if forecast_only { "予報  " } else { "" };
+    (
+        format!("{}  {flag}{}", pad(&range, range.width().max(7)), area.name),
+        rgb,
+    )
+}
+
+fn eew_area_panel(
+    title: &str,
+    areas: &[(String, Rgb)],
+    warning: bool,
     missing: usize,
     width: usize,
     height: usize,
@@ -1287,13 +1550,16 @@ fn eew_warning_areas(
     let mut content: Vec<_> = areas
         .iter()
         .take(shown)
-        .map(|name| color(&fit(name, inner), INK, ansi))
+        .map(|(line, rgb)| color(&fit(line, inner), *rgb, ansi))
         .collect();
     if areas.is_empty() {
         content.push(color(&fit("対象地域の情報なし", inner), MUTED, ansi));
-    } else if areas.len() > shown {
+    } else if areas.len() > shown && content.len() < capacity {
         content.push(color(
-            &fit(&format!("ほか {} 地域", areas.len() - shown), inner),
+            &fit(
+                &format!("ほか {} 地域 · I 詳細", areas.len() - shown),
+                inner,
+            ),
             MUTED,
             ansi,
         ));
@@ -1305,17 +1571,19 @@ fn eew_warning_areas(
         ));
     }
     let title = if areas.len() > shown {
-        format!("警報対象地域 {}", areas.len())
+        format!("{title} {}", areas.len())
     } else {
-        "警報対象地域".into()
+        title.to_owned()
     };
-    Border::new(width, FRAME_ALERT, ansi).text(content, &title, height)
+    Border::new(width, if warning { FRAME_ALERT } else { FRAME }, ansi)
+        .text(content, &title, height)
 }
 
 pub fn detail(
     b: &Bulletin,
     banner: &str,
     layer: Layer,
+    grouping: StationGrouping,
     display: Display,
     scroll: &mut usize,
     menu: &[String],
@@ -1325,6 +1593,7 @@ pub fn detail(
     let mut header = menu.to_vec();
     let mut content = event_facts(b, inner, display.colors);
     let mut rows = Vec::new();
+    let mut intensity_rows_start = None;
     let mut comment = b.comment.split_whitespace().collect::<Vec<_>>().join(" ");
     comment.retain(|c| !c.is_control());
     while !comment.is_empty() {
@@ -1335,16 +1604,22 @@ pub fn detail(
     if !rows.is_empty() {
         rows.push((String::new(), INK));
     }
-    if !b.warning_areas.is_empty() {
-        rows.push((format!("警報対象地域  {} 件", b.warning_areas.len()), ALERT));
-        rows.extend(b.warning_areas.iter().cloned().map(|name| (name, INK)));
-    } else if b.has_observations() {
-        let entries = readings(b, layer);
+    if let Some((title, areas)) = eew_area_entries(b) {
         rows.push((
-            format!("{}  {} 件", observation_label(layer), entries.len()),
-            MUTED,
+            format!("{title}  {} 地域", areas.len()),
+            if b.warning { ALERT } else { ACCENT },
         ));
-        rows.extend(entries);
+        rows.extend(areas);
+    } else if b.has_observations() {
+        let count = match layer {
+            Layer::Regions => b.regions.len(),
+            Layer::Stations => b.stations.len(),
+        };
+        rows.push((format!("{}  {count} 件", observation_label(layer)), MUTED));
+        if layer == Layer::Stations && grouping == StationGrouping::Intensity {
+            intensity_rows_start = Some(rows.len());
+        }
+        rows.extend(readings(b, layer, grouping));
     }
     let mut actions = vec![("↑↓", "スクロール"), ("I/B", "地図へ戻る")];
     if b.has_observations() {
@@ -1355,11 +1630,21 @@ pub fn detail(
     let mut capacity = display
         .rows
         .saturating_sub(header.len() + content.len() + controls.len() + 3);
-    if capacity > 1 && !rows.is_empty() {
-        content.push(String::new());
-        capacity -= 1;
-    }
+    let separator = capacity > 1 && !rows.is_empty();
+    capacity -= usize::from(separator);
     *scroll = (*scroll).min(rows.len().saturating_sub(capacity));
+    if separator {
+        let continuation = intensity_rows_start
+            .filter(|start| *scroll > *start && !rows[*scroll].0.starts_with("── "))
+            .and_then(|start| {
+                rows[start..*scroll]
+                    .iter()
+                    .rfind(|(line, _)| line.starts_with("── "))
+            });
+        content.push(continuation.map_or_else(String::new, |(line, rgb)| {
+            color(&fit(line, inner), *rgb, display.colors)
+        }));
+    }
     content.extend(
         rows.iter()
             .skip(*scroll)
@@ -1418,6 +1703,7 @@ impl Renderer {
             series,
             view,
             layer,
+            station_grouping,
             controls,
             history,
             menu,
@@ -1426,6 +1712,12 @@ impl Renderer {
         } = scene;
         let framed = !menu.is_empty();
         let eew_panel = framed && b.eew;
+        let area_entries = eew_area_entries(b);
+        let warning_missing = b
+            .warning_areas
+            .iter()
+            .filter(|area| !self.atlas.has_area(area))
+            .count();
         let map_edges = if framed { 2 } else { 0 };
         let gap = if framed { PANEL_GAP } else { SIDEBAR_GAP };
         let split = history.is_some() && width >= MIN_SPLIT_WIDTH;
@@ -1487,20 +1779,15 @@ impl Renderer {
         header.push(String::new());
         let mut aside = Vec::new();
         if history.is_none() && !eew_panel {
-            if !b.warning_areas.is_empty() {
-                aside.push(("警報対象地域".into(), ALERT));
-                let missing = b
-                    .warning_areas
-                    .iter()
-                    .filter(|area| !self.atlas.has_area(area))
-                    .count();
-                if missing > 0 {
-                    aside.push((format!("地図にない地域 {missing}件"), MUTED));
+            if let Some((title, areas)) = &area_entries {
+                aside.push(((*title).into(), if b.warning { ALERT } else { ACCENT }));
+                if warning_missing > 0 {
+                    aside.push((format!("地図にない地域 {warning_missing}件"), MUTED));
                 }
-                aside.extend(b.warning_areas.iter().cloned().map(|area| (area, INK)));
+                aside.extend(areas.iter().cloned());
             } else if b.has_observations() {
                 aside.push((observation_label(layer).into(), MUTED));
-                aside.extend(readings(b, layer));
+                aside.extend(readings(b, layer, station_grouping));
             }
         }
         let mut legend = Vec::new();
@@ -1582,19 +1869,11 @@ impl Renderer {
         }
         footer.extend_from_slice(controls);
 
-        let warning_missing = if eew_panel && b.warning {
-            b.warning_areas
-                .iter()
-                .filter(|area| !self.atlas.has_area(area))
-                .count()
-        } else {
-            0
-        };
         if eew_panel && sidebar_width == 0 {
             let available = display
                 .rows
                 .saturating_sub(header.len() + footer.len() + map_edges + 5);
-            let warning_height = if b.warning && available >= 6 {
+            let area_height = if area_entries.is_some() && available >= 6 {
                 (available / 3).clamp(3, 7)
             } else {
                 0
@@ -1603,7 +1882,7 @@ impl Renderer {
                 header.extend(eew_overview(
                     b,
                     width,
-                    available - warning_height,
+                    available - area_height,
                     display.colors,
                     eew_source,
                 ));
@@ -1615,14 +1894,18 @@ impl Renderer {
                 }
                 header.push(fit(&summary, width));
             }
-            if warning_height > 0 {
+            if area_height > 0
+                && let Some((title, areas)) = &area_entries
+            {
                 footer.splice(
                     ..0,
-                    eew_warning_areas(
-                        &b.warning_areas,
+                    eew_area_panel(
+                        title,
+                        areas,
+                        b.warning,
                         warning_missing,
                         width,
-                        warning_height,
+                        area_height,
                         display.colors,
                     ),
                 );
@@ -1673,18 +1956,26 @@ impl Renderer {
             Vec::new()
         } else if eew_panel {
             let height = rows + map_edges;
-            let warning_space = if b.warning && height >= 6 { 3 } else { 0 };
+            let area_space = if area_entries.is_some() && height >= 6 {
+                3
+            } else {
+                0
+            };
             let mut panels = eew_overview(
                 b,
                 sidebar_width,
-                height - warning_space,
+                height - area_space,
                 display.colors,
                 eew_source,
             );
             let remaining = height - panels.len();
-            if b.warning && remaining >= 3 {
-                panels.extend(eew_warning_areas(
-                    &b.warning_areas,
+            if remaining >= 3
+                && let Some((title, areas)) = &area_entries
+            {
+                panels.extend(eew_area_panel(
+                    title,
+                    areas,
+                    b.warning,
                     warning_missing,
                     sidebar_width,
                     remaining,
@@ -1698,6 +1989,7 @@ impl Renderer {
                 quake_notices,
                 history,
                 layer,
+                station_grouping,
                 reading_start,
                 sidebar_width,
                 rows + map_edges,
@@ -2019,11 +2311,66 @@ mod tests {
         bulletin.regions[0].level = Level::Known(4);
         bulletin.regions[1].level = Level::Known(3);
         bulletin.regions[2].level = Level::Other("5弱以上・未入電".into());
-        let lines = readings(&bulletin, Layer::Regions);
+        let lines = readings(&bulletin, Layer::Regions, StationGrouping::Prefecture);
         assert!(lines[0].0.starts_with("5-  "));
         assert!(lines[1].0.starts_with(" 4  "));
         assert!(lines[2].0.starts_with(" —  "));
         assert!(lines[2].0.ends_with("（5弱以上・未入電）"));
+    }
+
+    #[test]
+    fn station_lists_group_by_prefecture_and_keep_the_heading_when_scrolling() {
+        let bulletin = crate::data::demo().pop().unwrap();
+        let rows = readings(&bulletin, Layer::Stations, StationGrouping::Prefecture);
+        let headings: Vec<_> = rows
+            .iter()
+            .filter(|(line, _)| line.starts_with("── "))
+            .map(|(line, _)| line.as_str())
+            .collect();
+        assert_eq!(
+            headings,
+            [
+                "── 宮城県",
+                "── 岩手県",
+                "── 福島県",
+                "── 山形県",
+                "── 秋田県"
+            ]
+        );
+        let (title, rows) = station_readings_window(&bulletin, StationGrouping::Prefecture, 4, 2);
+        assert_eq!(title, "各地の震度 · 観測点  5–5/14");
+        assert_eq!(rows[0].0, "── 岩手県");
+        assert!(rows[1].0.contains("大船渡"));
+        let (title, rows) = station_readings_window(&bulletin, StationGrouping::Prefecture, 3, 4);
+        assert_eq!(title, "各地の震度 · 観測点  4–5/14");
+        assert_eq!(rows[0].0, "── 宮城県");
+        assert!(rows[1].0.contains("仙台"));
+        assert_eq!(rows[2].0, "── 岩手県");
+        assert!(rows[3].0.contains("大船渡"));
+    }
+
+    #[test]
+    fn station_lists_can_group_intensities_across_prefectures() {
+        let mut bulletin = crate::data::demo().pop().unwrap();
+        bulletin.stations[0].level = Level::Known(5);
+        let rows = readings(&bulletin, Layer::Stations, StationGrouping::Intensity);
+        assert_eq!(
+            rows[0],
+            ("── 震度 5+".into(), reading_rgb(&Level::Known(5)))
+        );
+        assert_eq!(rows[1].0, "石巻");
+        assert_eq!(
+            rows[2],
+            ("── 震度 5-".into(), reading_rgb(&Level::Known(4)))
+        );
+        let four = rows.iter().position(|row| row.0 == "── 震度 4").unwrap();
+        assert!(rows[four + 1].0.contains("気仙沼"));
+        assert!(rows[four + 2].0.contains("仙台"));
+        assert!(rows[four + 3].0.contains("大船渡"));
+        let (title, window) = station_readings_window(&bulletin, StationGrouping::Intensity, 1, 2);
+        assert!(title.contains("震度別"));
+        assert_eq!(window[0].0, "── 震度 5-");
+        assert_eq!(window[1].0, "南三陸");
     }
 
     #[test]
@@ -2196,6 +2543,8 @@ mod tests {
         assert!(frame.text.contains("DEMO 架空 2/3"));
         assert!(frame.text.contains("速報概要"));
         assert!(!frame.text.contains("警報対象地域"));
+        assert!(frame.text.contains("地域別の予想震度"));
+        assert!(frame.text.contains("5-〜5+"));
         assert!(frame.text.contains(" █    ▀▀▀ "));
         assert!(!frame.text.contains(" █    ▀█▀ "));
     }
@@ -2461,6 +2810,7 @@ mod tests {
                     name: "宮城県北部".into(),
                     location: None,
                     area_code: String::new(),
+                    prefecture: None,
                 }],
                 ..Bulletin::default()
             },
@@ -2474,6 +2824,7 @@ mod tests {
             reports: &reports,
             selected: 0,
             status: "",
+            row_limit: crate::settings::DEFAULT_HISTORY_ROWS,
         });
         let frame = renderer.render(
             scene,
@@ -2506,6 +2857,7 @@ mod tests {
                     reports: &reports,
                     selected: 0,
                     status: "",
+                    row_limit: crate::settings::DEFAULT_HISTORY_ROWS,
                 }),
                 ..Scene::single(&reports[0].bulletin, true, "")
             },
@@ -2533,6 +2885,7 @@ mod tests {
                     level: Level::Known(2),
                     location: None,
                     area_code: String::new(),
+                    prefecture: None,
                 };
                 25
             ],
@@ -2563,6 +2916,7 @@ mod tests {
                     reports: &reports,
                     selected,
                     status: "",
+                    row_limit: crate::settings::DEFAULT_HISTORY_ROWS,
                 }),
                 reading_start,
                 ..Scene::single(bulletin, true, "")
@@ -2594,22 +2948,83 @@ mod tests {
     }
 
     #[test]
+    fn readings_fill_the_space_above_bottom_aligned_history() {
+        let bulletin = crate::data::demo().pop().unwrap();
+        let reports = [Report {
+            id: "event".into(),
+            bulletin: bulletin.clone(),
+        }];
+        let render = |row_limit, status| {
+            earthquake_sidebar(
+                &bulletin,
+                QuakeNotices::default(),
+                History {
+                    reports: &reports,
+                    selected: 0,
+                    status,
+                    row_limit,
+                },
+                Layer::Stations,
+                StationGrouping::Intensity,
+                0,
+                60,
+                38,
+                false,
+            )
+        };
+        let normal = render(10, "");
+        let short = render(4, "");
+        let retrying = render(10, "Wolfx 再接続中…");
+        let tall_history = render(50, "");
+        let top = |rows: &[String], name: &str| {
+            rows.iter()
+                .position(|line| line.starts_with('╭') && line.contains(name))
+                .unwrap()
+        };
+        let readings_bounds = |rows: &[String]| {
+            let start = top(rows, "観測点");
+            let end = rows
+                .iter()
+                .enumerate()
+                .skip(start + 1)
+                .find(|(_, line)| line.starts_with('╰'))
+                .unwrap()
+                .0;
+            (start, end)
+        };
+        let (normal_top, normal_bottom) = readings_bounds(&normal);
+        assert_eq!(readings_bounds(&short), (normal_top, normal_bottom + 6));
+        assert_eq!(readings_bounds(&retrying), (normal_top, normal_bottom));
+        assert_eq!(readings_bounds(&tall_history), (normal_top, normal_top + 3));
+        for rows in [normal, short, retrying, tall_history] {
+            assert_eq!(rows.len(), 38);
+            assert_eq!(readings_bounds(&rows).1 + 1, top(&rows, "地震履歴"));
+            assert!(rows[37].starts_with('╰'));
+        }
+    }
+
+    #[test]
     fn wide_map_and_earthquake_sidebar_use_the_available_width() {
         let mut renderer = Renderer::new().unwrap();
         let bulletin = crate::data::demo().pop().unwrap();
         let reports: Vec<_> = (0..50)
             .map(|i| Report {
                 id: i.to_string(),
-                bulletin: bulletin.clone(),
+                bulletin: Bulletin {
+                    name: format!("試験地震 {i:02}"),
+                    ..bulletin.clone()
+                },
             })
             .collect();
         let mut scene = Scene::single(&bulletin, true, "地震 1/50");
         let menu = ["TuiQuake  [1 地震]  2 EEW  3 津波  4 デモ".into()];
         scene.menu = &menu;
+        scene.station_grouping = StationGrouping::Prefecture;
         scene.history = Some(History {
             reports: &reports,
             selected: 0,
             status: "",
+            row_limit: crate::settings::DEFAULT_HISTORY_ROWS,
         });
         let frame = renderer.render(
             scene,
@@ -2632,15 +3047,50 @@ mod tests {
             frame
                 .text
                 .lines()
-                .any(|line| line.contains("╭─ 各地の震度"))
+                .any(|line| line.contains("╭─ 各地の震度 · 観測点"))
         );
+        assert!(frame.text.lines().any(|line| line.contains("│ ── 宮城県")));
         assert!(frame.text.lines().any(|line| line.contains("╭─ 地震履歴")));
         assert!(
             frame
                 .text
                 .lines()
-                .nth(frame.map_row - 1 + 41)
-                .is_some_and(|line| line.contains("│") && line.contains("宮城県沖"))
+                .any(|line| line.starts_with('╰') && line.matches('╰').count() == 2)
+        );
+        let entries = frame
+            .text
+            .lines()
+            .filter(|line| line.contains("試験地震"))
+            .count();
+        assert_eq!(entries, 10);
+        let compact = compact(
+            History {
+                reports: &reports,
+                selected: 20,
+                status: "",
+                row_limit: 4,
+            },
+            Display {
+                columns: 50,
+                rows: 25,
+                colors: false,
+                map: Map::Text,
+            },
+            &menu,
+        );
+        assert_eq!(
+            compact
+                .text
+                .lines()
+                .filter(|line| line.contains("試験地震"))
+                .count(),
+            4
+        );
+        assert!(
+            compact
+                .text
+                .lines()
+                .any(|line| line.contains("│ >") && line.contains("試験地震 20"))
         );
     }
 }

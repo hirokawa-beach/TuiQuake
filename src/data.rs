@@ -1,8 +1,8 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     error::Error,
     net::{TcpStream, ToSocketAddrs},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -10,11 +10,8 @@ use std::{
 use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use serde_json::Value;
 
-const EARTHQUAKES: &str = "https://api.wolfx.jp/jma_eqlist.json";
 const EARTHQUAKE_DETAIL: &str = "https://api.wolfx.jp/jma_earthquake_detail.json";
-const EEW: &str = "https://api.wolfx.jp/jma_eew.json";
-const EEW_SOCKET: &str = "wss://ws-api.wolfx.jp/jma_eew";
-const TSUNAMI: &str = "https://api.wolfx.jp/jma_tsunami.json";
+const LIVE_SOCKET: &str = "wss://ws-api.wolfx.jp/all_eew?exclude=sc_eew,fj_eew,cq_eew,cenc_eew,cenc_eqlist,jma_special_eq";
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 #[derive(Clone, Copy, Debug)]
@@ -84,6 +81,7 @@ pub struct Observation {
     pub level: Level,
     pub location: Option<Location>,
     pub area_code: String,
+    pub prefecture: Option<String>,
 }
 
 pub type Stamp = DateTime<FixedOffset>;
@@ -98,6 +96,13 @@ fn parse_time(value: &str) -> Option<Stamp> {
     parsed
         .and_local_timezone(FixedOffset::east_opt(9 * 3600)?)
         .single()
+}
+
+#[derive(Clone, Debug)]
+pub struct ForecastArea {
+    pub name: String,
+    pub minimum: Option<Level>,
+    pub maximum: Option<Level>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -119,11 +124,13 @@ pub struct Bulletin {
     pub eew_notice: Option<bool>,
     pub tsunami_notice: Option<&'static str>,
     pub warning_areas: Vec<String>,
+    pub forecast_areas: Vec<ForecastArea>,
     pub stations: Vec<Observation>,
     pub regions: Vec<Observation>,
     pub comment: String,
 }
 
+#[derive(Clone)]
 pub struct Report {
     pub id: String,
     pub bulletin: Bulletin,
@@ -160,6 +167,10 @@ fn depth(value: &Value) -> Option<u32> {
 
 fn entries(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
+}
+
+fn indexed_entry<'a>(array: &'a Value, index: &Value) -> Option<&'a Value> {
+    array.get(usize::try_from(index.as_u64()?).ok()?)
 }
 
 fn station_location(name: &str) -> Option<Location> {
@@ -269,36 +280,49 @@ fn event_report(event: &Value) -> Option<Report> {
         .and_then(|index| event["hypocenters"].get(index))
         .unwrap_or(&Value::Null);
     let observed = &source["observation"];
-    let mut regions: Vec<_> = entries(&observed["areas"])
+    let areas = &observed["areas"];
+    let mut regions: Vec<_> = entries(areas)
         .filter_map(|area| {
             Some(Observation {
                 name: text(&area["name"]).into(),
                 level: Level::parse(text(&area["int"]))?,
                 location: None,
                 area_code: text(&area["code"]).into(),
+                prefecture: None,
             })
         })
         .collect();
     let mut seen = HashSet::new();
-    let mut stations: Vec<_> = ["areas", "cities"]
-        .into_iter()
-        .flat_map(|key| entries(&observed[key]))
-        .flat_map(|area| entries(&area["stations"]))
-        .filter_map(|station| {
+    let station_sets = entries(areas)
+        .map(|area| (Some(area), &area["stations"]))
+        .chain(
+            entries(&observed["cities"])
+                .map(|city| (indexed_entry(areas, &city["area"]), &city["stations"])),
+        );
+    let mut stations = Vec::new();
+    for (area, points) in station_sets {
+        let prefecture = area
+            .and_then(|area| indexed_entry(&observed["prefs"], &area["pref"]))
+            .map(|pref| text(&pref["name"]).trim())
+            .filter(|name| !name.is_empty());
+        for station in entries(points) {
             let name = text(&station["name"]);
             let code = text(&station["code"]);
-            let level = Level::parse(text(&station["int"]))?;
-            (!name.is_empty() && seen.insert(if code.is_empty() { name } else { code })).then(
-                || Observation {
+            let Some(level) = Level::parse(text(&station["int"])) else {
+                continue;
+            };
+            if !name.is_empty() && seen.insert(if code.is_empty() { name } else { code }) {
+                stations.push(Observation {
                     name: name.into(),
                     level,
                     location: epicenter(&station["longitude"], &station["latitude"])
                         .or_else(|| station_location(name)),
                     area_code: String::new(),
-                },
-            )
-        })
-        .collect();
+                    prefecture: prefecture.map(str::to_owned),
+                });
+            }
+        }
+    }
     for rows in [&mut regions, &mut stations] {
         rows.sort_by_key(|row| std::cmp::Reverse(row.level.index()));
     }
@@ -431,6 +455,14 @@ impl Bulletin {
     }
 }
 
+fn forecast_level(value: &Value) -> Option<Level> {
+    let value = text(value).trim();
+    if matches!(value, "不明" | "未設定" | "-" | "-1") || value.chars().all(|c| c == '/') {
+        return None;
+    }
+    Level::parse(value)
+}
+
 fn read_eew(packet: &Value) -> Option<Bulletin> {
     let flag = |key: &str| packet[key].as_bool().unwrap_or(false);
     if text(&packet["EventID"]).is_empty()
@@ -465,13 +497,27 @@ fn read_eew(packet: &Value) -> Option<Bulletin> {
         label.push_str("（最終報）");
     }
     let mut warning_areas = Vec::new();
-    if warning {
-        let mut seen = HashSet::new();
-        for area in packet["WarnArea"].as_array().into_iter().flatten() {
-            let name = text(&area["Chiiki"]);
-            if !name.is_empty() && matches!(text(&area["Type"]), "" | "警報") && seen.insert(name)
+    let mut forecast_areas = Vec::new();
+    if !cancelled {
+        let mut warnings_seen = HashSet::new();
+        let mut forecasts_seen = HashSet::new();
+        for area in entries(&packet["WarnArea"]) {
+            let name = text(&area["Chiiki"]).trim();
+            if name.is_empty() {
+                continue;
+            }
+            if warning && matches!(text(&area["Type"]), "" | "警報") && warnings_seen.insert(name)
             {
                 warning_areas.push(name.into());
+            }
+            let maximum = forecast_level(&area["Shindo1"]);
+            let minimum = forecast_level(&area["Shindo2"]);
+            if (minimum.is_some() || maximum.is_some()) && forecasts_seen.insert(name) {
+                forecast_areas.push(ForecastArea {
+                    name: name.into(),
+                    minimum,
+                    maximum,
+                });
             }
         }
     }
@@ -485,6 +531,7 @@ fn read_eew(packet: &Value) -> Option<Bulletin> {
         eew_event_id: Some(text(&packet["EventID"]).into()),
         warning,
         warning_areas,
+        forecast_areas,
         origin: (!intensity_only)
             .then(|| parse_time(text(&packet["OriginTime"])))
             .flatten(),
@@ -512,27 +559,62 @@ fn read_eew(packet: &Value) -> Option<Bulletin> {
     Some(bulletin)
 }
 
-pub enum EewUpdate {
-    Connected,
-    Report(Box<Bulletin>),
-    Disconnected,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveQuery {
+    Eew,
+    Quakes,
+    Tsunami,
 }
 
-fn socket_eew(packet: &Value) -> Option<Bulletin> {
-    // Cached query replies may omit the WebSocket discriminator.
-    if !matches!(text(&packet["type"]), "jma_eew" | "") {
-        return None;
+impl LiveQuery {
+    const ALL: [Self; 3] = [Self::Eew, Self::Quakes, Self::Tsunami];
+
+    fn source(self) -> &'static str {
+        match self {
+            Self::Eew => "jma_eew",
+            Self::Quakes => "jma_eqlist",
+            Self::Tsunami => "jma_tsunami",
+        }
     }
-    read_eew(packet).filter(Bulletin::fresh)
+
+    fn command(self) -> &'static str {
+        match self {
+            Self::Eew => "query_jmaeew",
+            Self::Quakes => "query_jmaeqlist",
+            Self::Tsunami => "query_jmatsunami",
+        }
+    }
 }
 
-fn eew_connection(notify: &mut impl FnMut(EewUpdate) -> bool) -> Result<()> {
+pub enum LiveUpdate {
+    Connection(bool),
+    Eew(Box<Bulletin>),
+    Quakes(Arc<[Report]>),
+    Tsunami(Tsunami),
+}
+
+fn live_update(packet: &Value, requested: Option<LiveQuery>) -> Option<LiveUpdate> {
+    let kind = match text(&packet["type"]) {
+        "" => requested?.source(),
+        kind => kind,
+    };
+    match kind {
+        "jma_eew" => read_eew(packet).map(|report| LiveUpdate::Eew(Box::new(report))),
+        "jma_eqlist" if packet.is_object() => Some(LiveUpdate::Quakes(read_reports(packet).into())),
+        "jma_tsunami" => read_tsunami(packet).ok().map(LiveUpdate::Tsunami),
+        _ => None,
+    }
+}
+
+type LiveSocket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
+
+fn connect_live(url: &str) -> Result<LiveSocket> {
     use tungstenite::{
-        Message, client::IntoClientRequest, client_tls_with_config, http::HeaderValue,
+        client::IntoClientRequest, client_tls_with_config, http::HeaderValue,
         protocol::WebSocketConfig, stream::MaybeTlsStream,
     };
 
-    let mut request = EEW_SOCKET.into_client_request()?;
+    let mut request = url.into_client_request()?;
     request.headers_mut().insert(
         "User-Agent",
         HeaderValue::from_static(concat!("TuiQuake/", env!("CARGO_PKG_VERSION"))),
@@ -550,56 +632,167 @@ fn eew_connection(notify: &mut impl FnMut(EewUpdate) -> bool) -> Result<()> {
     tcp.set_write_timeout(Some(timeout))?;
     let config = WebSocketConfig::default()
         .read_buffer_size(16 * 1024)
-        .max_message_size(Some(256 * 1024))
-        .max_frame_size(Some(256 * 1024));
+        .max_message_size(Some(4 * 1024 * 1024))
+        .max_frame_size(Some(4 * 1024 * 1024));
     let (mut socket, _) = client_tls_with_config(request, tcp, Some(config), None)?;
-    let tcp = match socket.get_mut() {
-        MaybeTlsStream::Rustls(stream) => &stream.sock,
-        _ => return Err("Wolfx WebSocket が TLS を使用していません".into()),
+    let MaybeTlsStream::Rustls(stream) = socket.get_mut() else {
+        return Err("Wolfx WebSocket が TLS を使用していません".into());
     };
-    // Wolfx sends a heartbeat roughly once a minute.
-    tcp.set_read_timeout(Some(Duration::from_secs(85)))?;
-    socket.send(Message::Text("query_jmaeew".into()))?;
-    if !notify(EewUpdate::Connected) {
-        return Ok(());
+    stream
+        .sock
+        .set_read_timeout(Some(Duration::from_millis(300)))?;
+    Ok(socket)
+}
+
+fn read_live(socket: &mut LiveSocket) -> tungstenite::Result<Option<Value>> {
+    use tungstenite::{Error, Message};
+    match socket.read()? {
+        Message::Text(message) => Ok(serde_json::from_str(message.as_str()).ok()),
+        Message::Ping(_) => {
+            socket.flush()?;
+            Ok(None)
+        }
+        Message::Close(_) => {
+            let _ = socket.flush();
+            Err(Error::ConnectionClosed)
+        }
+        _ => Ok(None),
     }
-    loop {
-        match socket.read()? {
-            Message::Text(message) => {
-                let Ok(packet) = serde_json::from_str::<Value>(message.as_str()) else {
-                    continue;
-                };
-                if text(&packet["type"]) == "heartbeat" {
-                    socket.send(Message::Text("ping".into()))?;
-                } else if let Some(report) = socket_eew(&packet)
-                    && !notify(EewUpdate::Report(Box::new(report)))
-                {
-                    return Ok(());
+}
+
+fn read_timed_out(error: &tungstenite::Error) -> bool {
+    matches!(error, tungstenite::Error::Io(error)
+        if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock))
+}
+
+fn live_snapshot(query: LiveQuery) -> Result<LiveUpdate> {
+    let mut socket = connect_live(&format!("wss://ws-api.wolfx.jp/{}", query.source()))?;
+    socket.send(tungstenite::Message::Text(query.command().into()))?;
+    let deadline = Instant::now() + Duration::from_secs(7);
+    while Instant::now() < deadline {
+        match read_live(&mut socket) {
+            Ok(Some(packet)) => {
+                if let Some(update) = live_update(&packet, Some(query)) {
+                    return Ok(update);
                 }
             }
-            Message::Ping(_) => socket.flush()?,
-            Message::Close(_) => {
-                let _ = socket.flush();
-                return Err("Wolfx が WebSocket を切断しました".into());
+            Ok(None) => {}
+            Err(error) if read_timed_out(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err("Wolfx WebSocket の応答がありません".into())
+}
+
+fn live_connection(
+    requests: &mpsc::Receiver<LiveQuery>,
+    notify: &mut impl FnMut(LiveUpdate) -> bool,
+) -> Result<()> {
+    let mut socket = connect_live(LIVE_SOCKET)?;
+    if !notify(LiveUpdate::Connection(true)) {
+        return Ok(());
+    }
+
+    let mut pending = VecDeque::from(LiveQuery::ALL);
+    let mut next_query = Instant::now();
+    let mut last_message = next_query;
+    let mut last_quakes = String::new();
+    loop {
+        loop {
+            match requests.try_recv() {
+                Ok(query) if !pending.contains(&query) => pending.push_back(query),
+                Ok(_) => {}
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
-            _ => {}
+        }
+        if Instant::now() >= next_query
+            && let Some(query) = pending.pop_front()
+        {
+            socket.send(tungstenite::Message::Text(query.command().into()))?;
+            // Wolfx may discard manual queries sent in a burst.
+            next_query = Instant::now() + Duration::from_millis(1100);
+        }
+
+        match read_live(&mut socket) {
+            Ok(packet) => {
+                last_message = Instant::now();
+                if let Some(packet) = packet {
+                    let kind = text(&packet["type"]);
+                    let inferred_query = if kind.is_empty() {
+                        if packet.get("No1").is_some() {
+                            Some(LiveQuery::Quakes)
+                        } else if packet.get("trusted").is_some() {
+                            Some(LiveQuery::Tsunami)
+                        } else if packet.get("EventID").is_some() {
+                            Some(LiveQuery::Eew)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(update) = live_update(&packet, inferred_query) {
+                        if matches!(&update, LiveUpdate::Quakes(_)) {
+                            let hash = text(&packet["md5"]);
+                            if !hash.is_empty() && hash == last_quakes {
+                                continue;
+                            }
+                            last_quakes = hash.to_owned();
+                        }
+                        if !notify(update) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Err(error)
+                if read_timed_out(&error) && last_message.elapsed() < Duration::from_secs(85) => {}
+            Err(error) => return Err(error.into()),
         }
     }
 }
 
-pub fn stream_eew(mut notify: impl FnMut(EewUpdate) -> bool) {
-    let mut retry = 5;
+pub fn stream_live(
+    requests: mpsc::Receiver<LiveQuery>,
+    mut notify: impl FnMut(LiveUpdate) -> bool,
+) {
+    let mut retry = Duration::from_secs(5);
     loop {
         let started = Instant::now();
-        if eew_connection(&mut notify).is_ok() || !notify(EewUpdate::Disconnected) {
+        if live_connection(&requests, &mut notify).is_ok() || !notify(LiveUpdate::Connection(false))
+        {
             break;
         }
         if started.elapsed() >= Duration::from_secs(60) {
-            retry = 5;
+            retry = Duration::from_secs(5);
         }
-        thread::sleep(Duration::from_secs(retry));
-        retry = (retry * 2).min(60);
+        thread::sleep(retry);
+        retry = (retry * 2).min(Duration::from_secs(60));
     }
+}
+
+pub fn merge_reports(list: &Arc<[Report]>, details: &Arc<[Report]>) -> Arc<[Report]> {
+    if list.is_empty() {
+        return Arc::clone(details);
+    }
+    if details.is_empty() {
+        return Arc::clone(list);
+    }
+    let detailed_ids: HashSet<_> = details.iter().map(|report| &report.id).collect();
+    let mut new_reports = list
+        .iter()
+        .filter(|report| !detailed_ids.contains(&report.id))
+        .peekable();
+    if new_reports.peek().is_none() {
+        return Arc::clone(details);
+    }
+    let mut joined = details.to_vec();
+    joined.extend(new_reports.cloned());
+    joined
+        .sort_by_key(|report| std::cmp::Reverse(report.bulletin.origin.or(report.bulletin.issued)));
+    joined.truncate(100);
+    joined.into()
 }
 
 pub struct Tsunami {
@@ -758,31 +951,41 @@ impl Client {
         })
     }
 
-    pub fn reports(&self) -> Result<Arc<[Report]>> {
+    pub fn details(&self) -> Result<Arc<[Report]>> {
         let mut cached = self
             .cached
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        match self.detailed_reports(cached.as_ref()) {
-            Ok(next) => {
-                let reports = Arc::clone(&next.reports);
-                *cached = Some(next);
-                Ok(reports)
-            }
-            Err(error) if cached.is_some() => Err(error),
-            Err(_) => {
-                let packet: Value = self.request(EARTHQUAKES, None)?.body_mut().read_json()?;
-                Ok(read_reports(&packet).into())
-            }
+        let next = self.detailed_reports(cached.as_ref())?;
+        let reports = Arc::clone(&next.reports);
+        *cached = Some(next);
+        Ok(reports)
+    }
+
+    pub fn reports(&self) -> Result<Arc<[Report]>> {
+        match self.details() {
+            Ok(reports) if !reports.is_empty() => Ok(reports),
+            _ => match live_snapshot(LiveQuery::Quakes)? {
+                LiveUpdate::Quakes(reports) => Ok(reports),
+                _ => Err("Wolfx の地震一覧の応答が不正です".into()),
+            },
         }
     }
 
-    pub fn tsunami(&self) -> Result<Tsunami> {
-        read_tsunami(&self.request(TSUNAMI, None)?.body_mut().read_json()?)
-    }
-
     pub fn eew(&self) -> Result<Option<Bulletin>> {
-        Ok(read_eew(&self.request(EEW, None)?.body_mut().read_json()?))
+        match live_snapshot(LiveQuery::Eew)? {
+            LiveUpdate::Eew(report) => Ok(Some(*report)),
+            _ => Err("Wolfx の緊急地震速報の応答が不正です".into()),
+        }
+    }
+}
+
+pub fn set_demo_intensity(report: &mut Bulletin, maximum: u8) {
+    report.maximum = Some(Level::Known(maximum));
+    for (index, area) in report.forecast_areas.iter_mut().enumerate() {
+        let upper = maximum.saturating_sub(u8::from(index >= 3));
+        area.minimum = Some(Level::Known(upper.saturating_sub(1)));
+        area.maximum = Some(Level::Known(upper));
     }
 }
 
@@ -805,7 +1008,6 @@ pub fn demo() -> Vec<Bulletin> {
     first.warning = true;
     first.eew = true;
     first.eew_serial = Some(1);
-    first.maximum = Some(Level::Known(4));
     first.magnitude = "5.8".into();
     first.depth = Some(50);
     first.warning_areas = ["宮城県北部", "宮城県中部", "宮城県南部"]
@@ -821,7 +1023,6 @@ pub fn demo() -> Vec<Bulletin> {
     second.eew = true;
     second.eew_serial = Some(2);
     second.eew_final = true;
-    second.maximum = Some(Level::Known(5));
     second.magnitude = "6.1".into();
     second.depth = Some(45);
     second.warning_areas = first.warning_areas.clone();
@@ -834,32 +1035,46 @@ pub fn demo() -> Vec<Bulletin> {
         ]
         .map(String::from),
     );
+    for (report, maximum) in [(&mut first, 4), (&mut second, 5)] {
+        report.forecast_areas = report
+            .warning_areas
+            .iter()
+            .cloned()
+            .map(|name| ForecastArea {
+                name,
+                minimum: None,
+                maximum: None,
+            })
+            .collect();
+        set_demo_intensity(report, maximum);
+    }
     let mut actual = bulletin("観測震度", "2000-01-01T14:34:00+09:00", 142.38, 38.34);
     actual.depth = Some(45);
     actual.magnitude = "6.1".into();
     actual.maximum = Some(Level::Known(4));
     actual.stations = [
-        ("石巻", 141.30, 38.43, 4),
-        ("南三陸", 141.45, 38.68, 4),
-        ("気仙沼", 141.57, 38.91, 3),
-        ("仙台", 140.87, 38.27, 3),
-        ("大船渡", 141.71, 39.07, 3),
-        ("一関", 141.13, 38.93, 2),
-        ("相馬", 140.92, 37.80, 2),
-        ("釜石", 141.88, 39.27, 2),
-        ("福島", 140.47, 37.76, 1),
-        ("郡山", 140.38, 37.40, 1),
-        ("盛岡", 141.16, 39.70, 1),
-        ("山形", 140.34, 38.25, 0),
-        ("いわき", 140.89, 37.05, 0),
-        ("大館", 140.56, 40.27, 0),
+        ("宮城県", "石巻", 141.30, 38.43, 4),
+        ("宮城県", "南三陸", 141.45, 38.68, 4),
+        ("宮城県", "気仙沼", 141.57, 38.91, 3),
+        ("宮城県", "仙台", 140.87, 38.27, 3),
+        ("岩手県", "大船渡", 141.71, 39.07, 3),
+        ("岩手県", "一関", 141.13, 38.93, 2),
+        ("福島県", "相馬", 140.92, 37.80, 2),
+        ("岩手県", "釜石", 141.88, 39.27, 2),
+        ("福島県", "福島", 140.47, 37.76, 1),
+        ("福島県", "郡山", 140.38, 37.40, 1),
+        ("岩手県", "盛岡", 141.16, 39.70, 1),
+        ("山形県", "山形", 140.34, 38.25, 0),
+        ("福島県", "いわき", 140.89, 37.05, 0),
+        ("秋田県", "大館", 140.56, 40.27, 0),
     ]
     .into_iter()
-    .map(|(name, lon, lat, level)| Observation {
+    .map(|(prefecture, name, lon, lat, level)| Observation {
         name: name.into(),
         level: Level::Known(level),
         location: Location::new(lon, lat),
         area_code: String::new(),
+        prefecture: Some(prefecture.into()),
     })
     .collect();
     actual.regions = [
@@ -879,6 +1094,7 @@ pub fn demo() -> Vec<Bulletin> {
         level: Level::Known(level),
         location: None,
         area_code: code.into(),
+        prefecture: None,
     })
     .collect();
     vec![first, second, actual]
@@ -926,20 +1142,80 @@ mod tests {
     }
 
     #[test]
-    fn websocket_eew_accepts_fresh_bulletins_and_ignores_non_reports() {
-        let mut packet = serde_json::json!({
-            "type": "jma_eew",
-            "EventID": "test",
-            "AnnouncedTime": Utc::now().to_rfc3339(),
-            "isWarn": true
+    fn station_prefectures_follow_the_observation_indexes() {
+        let report = event_report(&json!({
+            "eventId": "test",
+            "status": "reported",
+            "reports": [{"product":"VXSE53", "status":"issued", "observation": {
+                "prefs": [{"name":"岩手県"}, {"name":"宮城県"}],
+                "areas": [
+                    {"pref":0, "stations":[{"code":"1", "name":"大船渡", "int":"3"}]},
+                    {"pref":1}
+                ],
+                "cities": [
+                    {"area":0, "stations":[{"code":"1", "name":"大船渡", "int":"3"}]},
+                    {"area":1, "stations":[{"code":"2", "name":"石巻", "int":"4"}]},
+                    {"area":9, "stations":[{"code":"3", "name":"区域不明の観測点", "int":"2"}]}
+                ]
+            }}]
+        }))
+        .unwrap();
+        let prefectures: Vec<_> = report
+            .bulletin
+            .stations
+            .iter()
+            .map(|station| (station.name.as_str(), station.prefecture.as_deref()))
+            .collect();
+        assert_eq!(
+            prefectures,
+            [
+                ("石巻", Some("宮城県")),
+                ("大船渡", Some("岩手県")),
+                ("区域不明の観測点", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn websocket_dispatches_the_jma_sources_and_ignores_heartbeats() {
+        assert!(live_update(&json!({"type":"heartbeat"}), None).is_none());
+        let eew = json!({
+            "type": "jma_eew", "EventID": "test",
+            "AnnouncedTime": Utc::now().to_rfc3339(), "isWarn": true
         });
-        assert!(socket_eew(&packet).unwrap().warning);
-        packet["type"] = "heartbeat".into();
-        assert!(socket_eew(&packet).is_none());
-        packet.as_object_mut().unwrap().remove("type");
-        assert!(socket_eew(&packet).is_some());
-        packet["AnnouncedTime"] = "2000-01-01T00:00:00Z".into();
-        assert!(socket_eew(&packet).is_none());
+        assert!(matches!(live_update(&eew, None), Some(LiveUpdate::Eew(report)) if report.warning));
+        let list = json!({"type":"jma_eqlist", "No1":{
+            "EventID":"new", "time":"2026/11/22 10:00", "location":"宮城県沖"
+        }});
+        assert!(
+            matches!(live_update(&list, None), Some(LiveUpdate::Quakes(reports)) if reports[0].id == "new")
+        );
+        let tsunami = json!({"type":"jma_tsunami","status":"unknown"});
+        assert!(
+            matches!(live_update(&tsunami, None), Some(LiveUpdate::Tsunami(report)) if !report.alert)
+        );
+    }
+
+    #[test]
+    fn pending_quakes_are_added_without_losing_matching_details() {
+        let list = Arc::from(read_reports(&json!({
+            "No1":{"EventID":"new", "time":"2026/11/22 10:01"},
+            "No2":{"EventID":"known", "time":"2026/11/22 10:00"}
+        })));
+        let detail = Report {
+            id: "known".into(),
+            bulletin: Bulletin {
+                origin: parse_time("2026/11/22 10:00"),
+                comment: "震度の詳細".into(),
+                ..Bulletin::default()
+            },
+        };
+        let details = Arc::from([detail]);
+        assert!(Arc::ptr_eq(&merge_reports(&details, &details), &details));
+        let combined = merge_reports(&list, &details);
+        assert_eq!(combined.len(), 2);
+        assert_eq!(combined[0].id, "new");
+        assert_eq!(combined[1].bulletin.comment, "震度の詳細");
     }
 
     #[test]
@@ -999,11 +1275,20 @@ mod tests {
         let mut packet = json!({
             "EventID":"20261116132858","AnnouncedTime":"2026/11/16 13:29:31","Serial":4,
             "isWarn":true,"Latitude":35.3,"Longitude":139.0,"Magnitude":3.5,"Depth":10,
-            "WarnArea":[{"Chiiki":"静岡県東部","Type":"警報"},{"Chiiki":"神奈川県西部","Type":"予報"}]
+            "WarnArea":[
+                {"Chiiki":"静岡県東部","Type":"警報","Shindo1":"5強","Shindo2":"5弱"},
+                {"Chiiki":"神奈川県西部","Type":"予報","Shindo1":"4","Shindo2":"///"},
+                {"Chiiki":"神奈川県東部","Type":"予報","Shindo1":"不明"}
+            ]
         });
         let bulletin = read_eew(&packet).unwrap();
         assert!(bulletin.warning);
         assert_eq!(bulletin.warning_areas, ["静岡県東部"]);
+        assert_eq!(bulletin.forecast_areas.len(), 2);
+        let area = &bulletin.forecast_areas[0];
+        assert_eq!(area.minimum.as_ref().unwrap().label(), "5弱");
+        assert_eq!(area.maximum.as_ref().unwrap().label(), "5強");
+        assert!(bulletin.forecast_areas[1].minimum.is_none());
         assert_eq!(bulletin.eew_serial, Some(4));
         assert!(!bulletin.eew_final);
         packet["isWarn"] = json!(false);
@@ -1014,8 +1299,11 @@ mod tests {
         assert!(bulletin.eew_final);
         assert!(bulletin.label.starts_with("EEW 予報"));
         assert!(bulletin.warning_areas.is_empty());
+        assert_eq!(bulletin.forecast_areas.len(), 2);
         packet["isCancel"] = json!(true);
-        assert!(read_eew(&packet).unwrap().epicenter.is_none());
+        let cancelled = read_eew(&packet).unwrap();
+        assert!(cancelled.epicenter.is_none());
+        assert!(cancelled.forecast_areas.is_empty());
         packet["isTraining"] = json!(true);
         assert!(read_eew(&packet).is_none());
     }

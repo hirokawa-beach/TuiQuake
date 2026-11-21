@@ -2,6 +2,7 @@ mod data;
 mod graphics;
 mod map;
 mod screen;
+mod settings;
 mod ui;
 
 use std::{
@@ -12,7 +13,7 @@ use std::{
 };
 
 use data::{Bulletin, Client, Result};
-use graphics::{Capabilities, Image, Map};
+use graphics::{Map, MapMode};
 use screen::{APP_NAME, Renderer, Scene};
 
 const HELP: &str = "TuiQuake  日本の地震・緊急地震速報をターミナルで表示
@@ -23,7 +24,7 @@ const HELP: &str = "TuiQuake  日本の地震・緊急地震速報をターミ�
   latest    最新地震の観測震度
   eew       Wolfx が配信した最新の緊急地震速報
   replay    架空の EEW と観測震度のデモ
-  watch     地震情報と最新の警報を約10秒ごとに更新
+  watch     地震情報と緊急地震速報を受信し次第更新
 
   --history                   replay で Wolfx の最新 EEW を1報表示
   --delay 秒                   replay の画面切り替え間隔（既定 2.25 秒）
@@ -52,34 +53,13 @@ enum Colors {
     Never,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MapMode {
-    Auto,
-    Sixel,
-    Kitty,
-    Braille,
-    Text,
-}
-
-impl MapMode {
-    fn resolve(self, ansi: bool, detect: impl FnOnce() -> Capabilities) -> Map {
-        match self {
-            Self::Auto if ansi => detect().images().next().map_or(Map::Text, Map::Image),
-            Self::Sixel if ansi => Map::Image(Image::Sixel(graphics::WINDOWS_TERMINAL_CELL)),
-            Self::Kitty if ansi => Map::Image(Image::Kitty),
-            Self::Braille => Map::Braille,
-            _ => Map::Text,
-        }
-    }
-}
-
 struct Options {
     command: Command,
     history: bool,
     delay: Duration,
     national: bool,
     colors: Colors,
-    map: MapMode,
+    map: Option<MapMode>,
 }
 
 impl Options {
@@ -90,7 +70,7 @@ impl Options {
             delay: Duration::from_millis(2250),
             national: false,
             colors: Colors::Auto,
-            map: MapMode::Auto,
+            map: None,
         };
         let mut args = std::env::args().skip(1);
         let mut command_given = false;
@@ -132,7 +112,7 @@ impl Options {
                     }
                 }
                 "--map" => {
-                    options.map = match argument()?.as_str() {
+                    options.map = Some(match argument()?.as_str() {
                         "auto" => MapMode::Auto,
                         "sixel" => MapMode::Sixel,
                         "kitty" => MapMode::Kitty,
@@ -143,7 +123,7 @@ impl Options {
                                 "--map は auto、sixel、kitty、braille、text のいずれかです".into(),
                             );
                         }
-                    }
+                    });
                 }
                 "tui" | "latest" | "eew" | "replay" | "watch"
                     if !command_given && inline.is_none() =>
@@ -233,56 +213,37 @@ fn watch(
     } else {
         None
     };
-    let mut quakes = None;
+    let mut app = ui::App::start(client.clone(), options.delay, options.national);
+    let waiting = Bulletin {
+        label: "取得待ち".into(),
+        ..Bulletin::default()
+    };
     let mut previous = screen::Frame::default();
+    let mut resize = ui::ResizeRedraw::default();
+    let interval = Duration::from_millis(200);
     loop {
-        let started = Instant::now();
-        let (update, eew) = thread::scope(|scope| {
-            let warning = scope.spawn(|| client.eew());
-            let update = client.reports();
-            (update, warning.join().expect("warning fetch thread"))
-        });
-        let mut statuses = Vec::new();
-        match update {
-            Ok(reports) => quakes = Some(reports),
-            Err(_) => statuses.push("地震情報の更新失敗"),
-        }
-        let warning = match eew {
-            Ok(eew) => eew.filter(Bulletin::fresh),
-            Err(_) => {
-                statuses.push("EEW の更新失敗");
-                None
+        let now = Instant::now();
+        let updated = app.update(now);
+        let mut display = ui::display(colors, map);
+        let resized = resize.update(&mut display, now);
+        if updated || resized {
+            let bulletin = app.newest().unwrap_or(&waiting);
+            let label = format!("{}  ·  {}", bulletin.label, app.live_status());
+            let frame = renderer.render(Scene::single(bulletin, options.national, &label), display);
+            if let Some(console) = console.as_mut() {
+                console.paint(frame)?;
+            } else if frame.text != previous.text || frame.graphic != previous.graphic {
+                print_frame(frame)?;
+                previous.text.clone_from(&frame.text);
+                previous.graphic.clone_from(&frame.graphic);
             }
-        };
-        let waiting = Bulletin {
-            label: "取得待ち".into(),
-            ..Bulletin::default()
-        };
-        let latest = quakes.as_deref().and_then(|reports| reports.first());
-        let bulletin = warning
-            .as_ref()
-            .or_else(|| latest.map(|report| &report.bulletin))
-            .unwrap_or(&waiting);
-        statuses.insert(0, bulletin.label.as_str());
-        let label = statuses.join("  /  ");
-        let frame = renderer.render(
-            Scene::single(bulletin, options.national, &label),
-            ui::display(colors, map),
-        );
-        if let Some(console) = console.as_mut() {
-            console.paint(frame)?;
-        } else if frame.text != previous.text || frame.graphic != previous.graphic {
-            print_frame(frame)?;
-            previous.text.clone_from(&frame.text);
-            previous.graphic.clone_from(&frame.graphic);
         }
-        let delay = Duration::from_secs(10).saturating_sub(started.elapsed());
         if console.is_some() {
-            if ui::wait_or_quit(delay)? {
+            if ui::wait_or_quit(interval)? {
                 return Ok(());
             }
         } else {
-            thread::sleep(delay);
+            thread::sleep(interval);
         }
     }
 }
@@ -300,7 +261,12 @@ fn run() -> Result<()> {
     };
     let client = Client::new();
     let mut renderer = Renderer::new()?;
-    let resolve = || options.map.resolve(ansi, graphics::detect);
+    let resolve = || {
+        options
+            .map
+            .unwrap_or_default()
+            .resolve(ansi, graphics::detect)
+    };
     let command = if options.history {
         Command::Eew
     } else {
@@ -308,12 +274,11 @@ fn run() -> Result<()> {
     };
     match command {
         Command::Tui => {
-            let map = (options.map != MapMode::Auto).then(resolve);
             ui::run(
                 client,
                 &mut renderer,
                 colors,
-                map,
+                options.map,
                 options.delay,
                 options.national,
             )?;
@@ -362,6 +327,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graphics::{Capabilities, Image};
 
     #[test]
     fn direct_output_uses_the_detected_image_or_text() {

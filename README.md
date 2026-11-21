@@ -4,10 +4,6 @@
 
 [起動する](#起動する) · [地震を調べる](#地震を調べる) · [速報と津波情報を見る](#速報と津波情報を見る)
 
-![TuiQuakeのデモ画面。上部に赤い緊急地震速報の帯があり、左の地図に震央と警報対象地域、右に推定最大震度と速報の概要が表示されている。](docs/eew-demo.png)
-
-*デモの警報画面。地震、震度、警報対象地域は架空の例です。*
-
 ## 起動する
 
 Windows Terminal の PowerShell で、ソースを取得してビルドします。準備するのは [Git](https://git-scm.com/install/windows)、[Rust](https://rust-lang.org/tools/install/)、[Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) です。

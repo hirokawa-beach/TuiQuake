@@ -1,0 +1,26 @@
+{
+  "Title": "緊急地震速報（予報）",
+  "CodeType": "Ｍ、最大予測震度及び主要動到達予測時刻の緊急地震速報",
+  "Issue": {
+    "Source": "東京",
+    "Status": "通常"
+  },
+  "EventID": "20261122174303",
+  "Serial": 4,
+  "AnnouncedTime": "2026/11/22 17:43:49",
+  "OriginTime": "2026/11/22 17:42:53",
+  "Hypocenter": "石垣島近海",
+  "Latitude": 24.6,
+  "Longitude": 124.6,
+  "Magunitude": 3.7,
+  "Magnitude": 3.7,
+  "Depth": 60,
+  "MaxIntensity": "1",
+  "WarnArea": [],
+  "isSea": true,
+  "isTraining": false,
+  "isAssumption": false,
+  "isWarn": false,
+  "isFinal": true,
+  "isCancel": false
+}

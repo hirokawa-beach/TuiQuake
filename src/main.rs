@@ -1,8 +1,10 @@
 mod data;
+mod eew;
 mod graphics;
 mod map;
 mod screen;
 mod settings;
+mod tsunami;
 mod ui;
 
 use std::{
@@ -22,11 +24,11 @@ const HELP: &str = "TuiQuake  日本の地震・緊急地震速報をターミ�
 
   tui       地図と地震一覧を操作する（既定）
   latest    最新地震の観測震度
-  eew       Wolfx が配信した最新の緊急地震速報
+  eew       配信元が記録した直近の緊急地震速報
   replay    架空の EEW と観測震度のデモ
   watch     地震情報と緊急地震速報を受信し次第更新
 
-  --history                   replay で Wolfx の最新 EEW を1報表示
+  --history                   replay で直近の EEW を1報表示
   --delay 秒                   replay の画面切り替え間隔（既定 2.25 秒）
   --japan                      全国を表示
   --color <auto|always|never>   テキストの色
@@ -228,7 +230,13 @@ fn watch(
         let resized = resize.update(&mut display, now);
         if updated || resized {
             let bulletin = app.newest().unwrap_or(&waiting);
-            let label = format!("{}  ·  {}", bulletin.label, app.live_status());
+            let status = app.live_status();
+            let provider = bulletin.provider.label();
+            let label = if status == provider {
+                format!("{}  ·  {provider}", bulletin.label)
+            } else {
+                format!("{}  ·  {provider}  ·  {status}", bulletin.label)
+            };
             let frame = renderer.render(Scene::single(bulletin, options.national, &label), display);
             if let Some(console) = console.as_mut() {
                 console.paint(frame)?;
@@ -285,17 +293,16 @@ fn run() -> Result<()> {
         }
         Command::Latest => {
             let reports = client.reports()?;
-            let report = reports
-                .first()
-                .ok_or("Wolfx に表示できる地震情報がありません")?;
+            let report = reports.first().ok_or("表示できる地震情報がありません")?;
+            let label = format!("地震情報 · {}", report.bulletin.provider.label());
             print_frame(renderer.render(
-                Scene::single(&report.bulletin, options.national, "地震情報 · Wolfx"),
+                Scene::single(&report.bulletin, options.national, &label),
                 ui::display(colors, resolve()),
             ))?;
         }
         Command::Eew => {
-            let bulletin = client.eew()?.ok_or("Wolfx に表示できる EEW がありません")?;
-            let label = format!("{} · Wolfx", bulletin.label);
+            let bulletin = client.eew()?.ok_or("表示できる EEW がありません")?;
+            let label = format!("{} · {}", bulletin.label, bulletin.provider.label());
             print_frame(renderer.render(
                 Scene::single(&bulletin, options.national, &label),
                 ui::display(colors, resolve()),

@@ -5,6 +5,7 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
+use serde::{Deserialize, Serialize};
 
 use crate::map::{PALETTE, Raster};
 
@@ -21,6 +22,59 @@ pub enum Map {
     Image(Image),
     Braille,
     Text,
+}
+
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MapMode {
+    #[default]
+    Auto,
+    Sixel,
+    Kitty,
+    Braille,
+    Text,
+}
+
+impl MapMode {
+    pub const ALL: [Self; 5] = [
+        Self::Auto,
+        Self::Sixel,
+        Self::Kitty,
+        Self::Braille,
+        Self::Text,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "起動時に選ぶ",
+            Self::Sixel => "Sixel",
+            Self::Kitty => "Kitty",
+            Self::Braille => Map::Braille.label(),
+            Self::Text => Map::Text.label(),
+        }
+    }
+
+    pub fn supported(self, capabilities: &Capabilities) -> Option<Map> {
+        match self {
+            Self::Auto => None,
+            Self::Sixel => capabilities
+                .sixel
+                .map(|cell| Map::Image(Image::Sixel(cell))),
+            Self::Kitty => capabilities.kitty.then_some(Map::Image(Image::Kitty)),
+            Self::Braille => Some(Map::Braille),
+            Self::Text => Some(Map::Text),
+        }
+    }
+
+    pub fn resolve(self, ansi: bool, detect: impl FnOnce() -> Capabilities) -> Map {
+        match self {
+            Self::Auto if ansi => detect().images().next().map_or(Map::Text, Map::Image),
+            Self::Sixel if ansi => Map::Image(Image::Sixel(WINDOWS_TERMINAL_CELL)),
+            Self::Kitty if ansi => Map::Image(Image::Kitty),
+            Self::Braille => Map::Braille,
+            _ => Map::Text,
+        }
+    }
 }
 
 impl Map {

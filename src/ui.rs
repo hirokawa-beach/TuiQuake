@@ -1,8 +1,8 @@
 use std::{
     borrow::Cow,
-    collections::VecDeque,
     fmt::Write as _,
     io::{self, IsTerminal, Write},
+    path::PathBuf,
     sync::{
         Arc,
         mpsc::{self, Receiver, Sender},
@@ -17,13 +17,19 @@ use crossterm::{
 };
 
 use crate::{
-    data::{self, Bulletin, Client, EewUpdate, INTENSITIES, Level, Report, Result, Tsunami},
-    graphics::{self, Image, KITTY_COMMAND, Map},
+    data::{
+        self, Bulletin, Client, INTENSITIES, Level, LiveQuery, LiveUpdate, Provider, Report,
+        Result, Source,
+    },
+    eew,
+    graphics::{self, Capabilities, Image, KITTY_COMMAND, Map, MapMode},
     map::{Layer, View},
     screen::{
         self, APP_NAME, Display, Frame, History, MIN_SPLIT_WIDTH, MenuNotice, QuakeNotices,
         Renderer, Scene,
     },
+    settings::{DEFAULT_HISTORY_ROWS, MAX_HISTORY_ROWS, Settings, StationGrouping},
+    tsunami::{self, Validity},
 };
 
 pub fn tty() -> bool {
@@ -123,8 +129,12 @@ impl Console {
     }
 }
 
-fn choose_map(console: &mut Console, colors: bool) -> Result<Option<Map>> {
-    let options: Vec<_> = graphics::detect()
+fn choose_map(
+    console: &mut Console,
+    colors: bool,
+    capabilities: &Capabilities,
+) -> Result<Option<Map>> {
+    let options: Vec<_> = capabilities
         .images()
         .map(Map::Image)
         .chain([Map::Braille])
@@ -154,6 +164,147 @@ fn choose_map(console: &mut Console, colors: bool) -> Result<Option<Map>> {
             }
             _ => {}
         }
+    }
+}
+
+struct SettingsMenu {
+    path: Option<PathBuf>,
+    saved: Settings,
+    draft: Settings,
+    field: usize,
+    notice: Option<(&'static str, bool)>,
+}
+
+impl SettingsMenu {
+    fn load() -> Self {
+        let path = Settings::path();
+        let (saved, notice) = match path.as_deref().map(Settings::load) {
+            Some(Ok(settings)) => (settings, None),
+            Some(Err(_)) => (
+                Settings::default(),
+                Some(("設定を読み込めないため、初期値で起動しました", true)),
+            ),
+            None => (
+                Settings::default(),
+                Some(("設定の保存先が見つかりません", true)),
+            ),
+        };
+        Self {
+            path,
+            saved,
+            draft: saved,
+            field: 0,
+            notice,
+        }
+    }
+
+    fn entries<'a>(&self, row_count: &'a str) -> [(&'static str, &'a str); 5] {
+        [
+            ("地図の描画方式", self.draft.map.label()),
+            (
+                "起動時の地図範囲",
+                if self.draft.national {
+                    "全国"
+                } else {
+                    "震源周辺"
+                },
+            ),
+            ("起動時の震度表示", self.draft.layer.label()),
+            ("観測点のまとめ方", self.draft.station_grouping.label()),
+            ("地震履歴の表示行数", row_count),
+        ]
+    }
+
+    fn handle(
+        &mut self,
+        key: KeyCode,
+        app: &mut App,
+        map: &mut Map,
+        capabilities: &Capabilities,
+    ) -> bool {
+        let save_row = self.entries("").len();
+        match key {
+            KeyCode::Up => self.field = self.field.saturating_sub(1),
+            KeyCode::Down => self.field = (self.field + 1).min(save_row),
+            KeyCode::Home => self.field = 0,
+            KeyCode::End => self.field = save_row,
+            KeyCode::Left | KeyCode::Right if self.field < save_row => {
+                let direction = if key == KeyCode::Right { 1 } else { -1 };
+                match self.field {
+                    0 => {
+                        let choices: Vec<_> = MapMode::ALL
+                            .into_iter()
+                            .filter(|mode| {
+                                *mode == MapMode::Auto || mode.supported(capabilities).is_some()
+                            })
+                            .collect();
+                        let next = choices
+                            .iter()
+                            .position(|&mode| mode == self.draft.map)
+                            .map_or(0, |index| {
+                                (index as isize + direction).rem_euclid(choices.len() as isize)
+                                    as usize
+                            });
+                        self.draft.map = choices[next];
+                    }
+                    1 => self.draft.national = !self.draft.national,
+                    2 => self.draft.layer = self.draft.layer.other(),
+                    3 => self.draft.station_grouping = self.draft.station_grouping.other(),
+                    4 => {
+                        self.draft.history_rows = self
+                            .draft
+                            .history_rows
+                            .saturating_add_signed(direction)
+                            .clamp(1, MAX_HISTORY_ROWS)
+                    }
+                    _ => unreachable!(),
+                }
+                self.notice = None;
+            }
+            KeyCode::Enter if self.field == save_row => self.save(app, map, capabilities),
+            KeyCode::Char('s' | 'S') => self.save(app, map, capabilities),
+            KeyCode::Esc => {
+                self.draft = self.saved;
+                self.notice = None;
+                app.change_tab(Tab::Quake);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn save(&mut self, app: &mut App, map: &mut Map, capabilities: &Capabilities) {
+        self.notice = Some(
+            match self.path.as_deref().map(|path| self.draft.save(path)) {
+                Some(Ok(())) => {
+                    if self.saved.map != self.draft.map
+                        && let Some(next) = self.draft.map.supported(capabilities)
+                    {
+                        *map = next;
+                    }
+                    if self.saved.national != self.draft.national {
+                        app.view = View::new(self.draft.national);
+                    }
+                    if self.saved.layer != self.draft.layer {
+                        app.layer = self.draft.layer;
+                        app.reading_start = 0;
+                    }
+                    if app.station_grouping != self.draft.station_grouping {
+                        app.station_grouping = self.draft.station_grouping;
+                        app.reading_start = 0;
+                    }
+                    app.history_rows = self.draft.history_rows;
+                    self.saved = self.draft;
+                    self.field = self.entries("").len();
+                    ("設定を保存して適用しました", false)
+                }
+                Some(Err(_)) => (
+                    "設定を保存できません。設定フォルダの書き込み権限を確認してください",
+                    true,
+                ),
+                None => ("設定の保存先が見つかりません", true),
+            },
+        );
     }
 }
 
@@ -190,37 +341,49 @@ mod tests {
         let now = Instant::now();
         let mut app = App::new(Client::new(), Duration::from_secs(2), false);
         assert!(app.select(KeyCode::Char('4'), 80, now));
-        let original = app.current().0.into_owned();
-        assert!(app.demo_next.is_none());
+        let original = app.current().unwrap().0.into_owned();
+        assert!(app.demo.next.is_none());
 
         assert!(app.select(KeyCode::Char(' '), 80, now));
-        assert!(app.demo_next.is_some());
+        assert!(app.demo.next.is_some());
         assert!(app.select(KeyCode::Right, 80, now));
-        assert!(app.demo_next.is_none());
-        assert_eq!(app.current().0.maximum.as_ref().unwrap().label(), "5強");
+        assert!(app.demo.next.is_none());
+        assert_eq!(
+            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
+            "5強"
+        );
         for _ in 0..4 {
             assert!(app.select(KeyCode::Right, 80, now));
         }
-        assert_eq!(app.current().0.maximum.as_ref().unwrap().label(), "1");
+        assert_eq!(
+            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
+            "1"
+        );
 
         assert!(app.select(KeyCode::Char('f'), 80, now));
-        assert!(!app.current().0.warning);
-        assert!(app.current().0.label.contains("予報"));
-        assert!(app.current().0.warning_areas.is_empty());
+        assert!(!app.current().unwrap().0.warning);
+        assert!(app.current().unwrap().0.label.contains("予報"));
+        assert!(app.current().unwrap().0.warning_areas.is_empty());
         assert!(app.select(KeyCode::Char('f'), 80, now));
-        assert_eq!(app.current().0.warning_areas, original.warning_areas);
-        assert_eq!(app.current().0.label, original.label);
+        assert_eq!(
+            app.current().unwrap().0.warning_areas,
+            original.warning_areas
+        );
+        assert_eq!(app.current().unwrap().0.label, original.label);
 
         assert!(app.select(KeyCode::Char('r'), 80, now));
-        assert_eq!(app.current().0.maximum.as_ref().unwrap().label(), "5弱");
-        assert!(app.demo_next.is_none());
+        assert_eq!(
+            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
+            "5弱"
+        );
+        assert!(app.demo.next.is_none());
     }
 
     #[test]
     fn live_eew_alert_changes_refresh_the_quake_menu_and_match_by_id() {
         let now = Instant::now();
         let mut app = App::new(Client::new(), Duration::from_secs(2), false);
-        app.next_refresh = [now + Duration::from_secs(60); 3];
+        app.details.next = now + Duration::from_secs(60);
         app.reports = vec![Report {
             id: "demo-event".into(),
             bulletin: Bulletin::default(),
@@ -233,17 +396,26 @@ mod tests {
             ..Bulletin::default()
         };
         app.send
-            .send(Reply::Eew(EewUpdate::Report(Box::new(eew.clone()))))
+            .send(Reply::Live(LiveUpdate::Clock(
+                Provider::Wolfx,
+                data::ServerClock {
+                    utc: eew.issued.unwrap().to_utc(),
+                    received: now,
+                },
+            )))
+            .unwrap();
+        app.send
+            .send(Reply::Live(LiveUpdate::Eew(Box::new(eew.clone()))))
             .unwrap();
         assert!(app.update(now));
         assert_eq!(app.quake_notices().eew, Some(true));
 
         eew.warning = true;
         app.send
-            .send(Reply::Eew(EewUpdate::Report(Box::new(eew))))
+            .send(Reply::Live(LiveUpdate::Eew(Box::new(eew))))
             .unwrap();
         assert!(app.update(now));
-        assert!(app.eew.unwrap().warning);
+        assert!(app.eew.active().unwrap().warning);
     }
 
     #[test]
@@ -338,10 +510,11 @@ pub fn wait_or_quit(delay: Duration) -> Result<bool> {
         if left.is_zero() || !event::poll(left)? {
             return Ok(false);
         }
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Release && quit(key) {
-                return Ok(true);
-            }
+        if let Event::Key(key) = event::read()?
+            && key.kind != KeyEventKind::Release
+            && quit(key)
+        {
+            return Ok(true);
         }
     }
 }
@@ -352,15 +525,17 @@ enum Tab {
     Eew,
     Tsunami,
     Demo,
+    Settings,
     About,
 }
 
 impl Tab {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Quake,
         Self::Eew,
         Self::Tsunami,
         Self::Demo,
+        Self::Settings,
         Self::About,
     ];
 
@@ -378,6 +553,7 @@ impl Tab {
             Self::Tsunami => "津波",
             Self::Demo => "デモ",
             Self::About => "About",
+            Self::Settings => "設定",
         }
     }
 }
@@ -390,13 +566,51 @@ enum Page {
 }
 
 enum Reply {
-    Reports(Result<Arc<[Report]>>),
-    Eew(EewUpdate),
-    Tsunami(Result<Tsunami>),
+    Details(Result<Arc<[Report]>>),
+    Live(LiveUpdate),
+}
+
+struct DemoState {
+    frames: Vec<Bulletin>,
+    hidden_areas: Vec<Vec<String>>,
+    delay: Duration,
+    next: Option<Instant>,
+}
+
+impl DemoState {
+    fn new(delay: Duration) -> Self {
+        let frames = data::demo();
+        Self {
+            hidden_areas: vec![Vec::new(); frames.len()],
+            frames,
+            delay: delay.max(Duration::from_millis(150)),
+            next: None,
+        }
+    }
+}
+
+struct DetailsState {
+    reports: Arc<[Report]>,
+    next: Instant,
+    requested: bool,
+    pending: bool,
+    error: Option<String>,
+}
+
+impl DetailsState {
+    fn new(now: Instant) -> Self {
+        Self {
+            reports: Arc::default(),
+            next: now,
+            requested: true,
+            pending: false,
+            error: None,
+        }
+    }
 }
 
 pub struct App {
-    client: Client,
+    client: Arc<dyn Source>,
     send: Sender<Reply>,
     incoming: Receiver<Reply>,
     tab: Tab,
@@ -406,29 +620,28 @@ pub struct App {
     reading_start: usize,
     pub view: View,
     layer: Layer,
+    station_grouping: StationGrouping,
+    history_rows: usize,
     reports: Arc<[Report]>,
-    eew: Option<Bulletin>,
-    received_eew_ids: VecDeque<String>,
-    tsunami: Option<Tsunami>,
-    tsunami_current: bool,
-    demo: Vec<Bulletin>,
-    demo_hidden_areas: Vec<Vec<String>>,
-    demo_delay: Duration,
-    demo_next: Option<Instant>,
-    next_refresh: [Instant; 3],
-    pending: [bool; 3],
-    received: [bool; 3],
-    source_error: [bool; 3],
+    list: Arc<[Report]>,
+    details: DetailsState,
+    queries: Option<Sender<LiveQuery>>,
+    provider: Provider,
+    connected: Option<bool>,
+    connection_error: Option<String>,
+    history_error: Option<String>,
+    eew: eew::State,
+    tsunami: tsunami::State,
+    tsunami_error: Option<String>,
+    demo: DemoState,
 }
 
 impl App {
-    pub fn new(client: Client, delay: Duration, national: bool) -> Self {
+    fn new(client: impl Source + 'static, delay: Duration, national: bool) -> Self {
         let (send, incoming) = mpsc::channel();
         let now = Instant::now();
-        let demo = data::demo();
-        let demo_hidden_areas = vec![Vec::new(); demo.len()];
         Self {
-            client,
+            client: Arc::new(client),
             send,
             incoming,
             tab: Tab::Quake,
@@ -438,28 +651,64 @@ impl App {
             reading_start: 0,
             view: View::new(national),
             layer: Layer::Regions,
+            station_grouping: StationGrouping::default(),
+            history_rows: DEFAULT_HISTORY_ROWS,
             reports: Arc::default(),
-            eew: None,
-            received_eew_ids: VecDeque::new(),
-            tsunami: None,
-            tsunami_current: false,
-            demo,
-            demo_hidden_areas,
-            demo_delay: delay.max(Duration::from_millis(150)),
-            demo_next: None,
-            next_refresh: [now; 3],
-            pending: [false; 3],
-            received: [false; 3],
-            source_error: [false; 3],
+            list: Arc::default(),
+            details: DetailsState::new(now),
+            queries: None,
+            provider: Provider::Wolfx,
+            connected: None,
+            connection_error: None,
+            history_error: None,
+            eew: eew::State::default(),
+            tsunami: tsunami::State::default(),
+            tsunami_error: None,
+            demo: DemoState::new(delay),
+        }
+    }
+
+    pub fn start(client: impl Source + 'static, delay: Duration, national: bool) -> Self {
+        let mut app = Self::new(client, delay, national);
+        let (send_queries, queries) = mpsc::channel();
+        app.queries = Some(send_queries);
+        let send = app.send.clone();
+        let client = Arc::clone(&app.client);
+        thread::spawn(move || {
+            client.stream(queries, &mut |update| {
+                send.send(Reply::Live(update)).is_ok()
+            });
+        });
+        app
+    }
+
+    pub fn newest(&self) -> Option<&Bulletin> {
+        self.eew
+            .active()
+            .or_else(|| self.reports.first().map(|report| &report.bulletin))
+    }
+
+    pub fn live_status(&self) -> &str {
+        match self.connected {
+            Some(false) => self.connection_error.as_deref().unwrap_or("再接続中…"),
+            None => "Wolfx 接続中…",
+            _ if self.eew.active().is_none() && self.eew.notice().is_some() => {
+                self.eew.notice().unwrap()
+            }
+            _ if self.provider == Provider::P2p => self
+                .history_error
+                .as_deref()
+                .unwrap_or("P2P地震情報（予備）"),
+            _ => self.details.error.as_deref().unwrap_or("Wolfx"),
         }
     }
 
     fn len(&self) -> usize {
         match self.tab {
             Tab::Quake => self.reports.len(),
-            Tab::Eew => usize::from(self.eew.is_some()),
-            Tab::Tsunami | Tab::About => 0,
-            Tab::Demo => self.demo.len(),
+            Tab::Eew => usize::from(self.eew.active().is_some()),
+            Tab::Tsunami | Tab::About | Tab::Settings => 0,
+            Tab::Demo => self.demo.frames.len(),
         }
     }
 
@@ -468,7 +717,7 @@ impl App {
             self.view.reset();
             if next == Tab::Demo {
                 self.selection[next.index()] = 0;
-                self.demo_next = None;
+                self.demo.next = None;
             }
         }
         self.tab = next;
@@ -485,7 +734,7 @@ impl App {
             other => other,
         };
         match key {
-            KeyCode::Char(digit @ '1'..='5') => {
+            KeyCode::Char(digit @ '1'..='6') => {
                 self.change_tab(Tab::ALL[(digit as u8 - b'1') as usize]);
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -496,7 +745,7 @@ impl App {
             KeyCode::Down if self.tab == Tab::About => self.scroll = self.scroll.saturating_add(1),
             KeyCode::Home if self.tab == Tab::About => self.scroll = 0,
             KeyCode::End if self.tab == Tab::About => self.scroll = usize::MAX,
-            _ if self.tab == Tab::About => return false,
+            _ if matches!(self.tab, Tab::About | Tab::Settings) => return false,
             KeyCode::Char('b') | KeyCode::Esc | KeyCode::Backspace => {
                 self.page = if self.tab == Tab::Quake
                     && width < MIN_SPLIT_WIDTH
@@ -520,12 +769,12 @@ impl App {
                 self.scroll = 0;
             }
             KeyCode::Char('v')
-                if self.page != Page::List && self.current().0.has_observations() =>
+                if self.page != Page::List
+                    && self
+                        .current()
+                        .is_some_and(|(report, _)| report.has_observations()) =>
             {
-                self.layer = match self.layer {
-                    Layer::Regions => Layer::Stations,
-                    Layer::Stations => Layer::Regions,
-                };
+                self.layer = self.layer.other();
                 self.scroll = 0;
                 self.reading_start = 0;
             }
@@ -560,35 +809,33 @@ impl App {
                             self.view.reset();
                         }
                     }
-                    self.demo_next = None;
+                    self.demo.next = None;
                 }
             }
             KeyCode::Char(' ') if self.tab == Tab::Demo => {
                 self.page = Page::Map;
-                if self.demo_next.take().is_none() {
+                if self.demo.next.take().is_none() {
                     let selected = &mut self.selection[self.tab.index()];
-                    if *selected + 1 == self.demo.len() {
+                    if *selected + 1 == self.demo.frames.len() {
                         *selected = 0;
                     }
-                    self.demo_next = Some(now + self.demo_delay);
+                    self.demo.next = Some(now + self.demo.delay);
                 }
             }
             KeyCode::Char('r') if self.tab == Tab::Demo => {
-                self.demo = data::demo();
-                self.demo_hidden_areas = vec![Vec::new(); self.demo.len()];
+                self.demo = DemoState::new(self.demo.delay);
                 self.selection[self.tab.index()] = 0;
-                self.demo_next = None;
                 self.page = Page::Map;
                 self.scroll = 0;
                 self.view.reset();
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char('f') if self.tab == Tab::Demo => {
                 let index = self.selection[self.tab.index()];
-                let bulletin = &mut self.demo[index];
+                let bulletin = &mut self.demo.frames[index];
                 if !bulletin.eew || self.page != Page::Map {
                     return false;
                 }
-                self.demo_next = None;
+                self.demo.next = None;
                 if key == KeyCode::Char('f') {
                     let previous = if bulletin.warning { "警報" } else { "予報" };
                     let next = if bulletin.warning { "予報" } else { "警報" };
@@ -596,7 +843,7 @@ impl App {
                     bulletin.warning = !bulletin.warning;
                     std::mem::swap(
                         &mut bulletin.warning_areas,
-                        &mut self.demo_hidden_areas[index],
+                        &mut self.demo.hidden_areas[index],
                     );
                 } else {
                     let current = bulletin
@@ -607,10 +854,12 @@ impl App {
                     let direction = if key == KeyCode::Left { -1 } else { 1 };
                     let next =
                         (i16::from(current) + direction).rem_euclid(INTENSITIES.len() as i16);
-                    bulletin.maximum = Some(Level::Known(next as u8));
+                    data::set_demo_intensity(bulletin, next as u8);
                 }
             }
-            _ if self.tab == Tab::Tsunami && key != KeyCode::Char('r') => return false,
+            _ if self.tab == Tab::Tsunami && key != KeyCode::Char('r') => {
+                return false;
+            }
             KeyCode::Char('z') => self.view = View::new(!self.view.national),
             KeyCode::Char('+' | '=' | ';') => return self.view.zoom_by(1),
             KeyCode::Char('-') => return self.view.zoom_by(-1),
@@ -620,173 +869,186 @@ impl App {
             KeyCode::Char('d') => return self.view.pan(0.18, 0.0),
             KeyCode::Char('0') => self.view.reset(),
             KeyCode::Char('r') if matches!(self.tab, Tab::Quake | Tab::Tsunami) => {
-                self.next_refresh[self.tab.index()] = now;
+                let query = match self.tab {
+                    Tab::Tsunami => LiveQuery::Tsunami,
+                    _ => {
+                        self.details.next = now;
+                        self.details.requested = true;
+                        LiveQuery::Quakes
+                    }
+                };
+                if let Some(sender) = &self.queries {
+                    let _ = sender.send(query);
+                }
             }
             _ => return false,
         }
         true
     }
 
-    fn update(&mut self, now: Instant) -> bool {
+    fn set_reports(&mut self, reports: Arc<[Report]>) {
+        let previous = self.reports.get(self.selection[0]);
+        self.selection[0] =
+            keep_selection(&self.reports, &reports, self.selection[0], |item| &item.id);
+        let next = reports.get(self.selection[0]);
+        if previous.map(|item| &item.id) != next.map(|item| &item.id) {
+            self.reading_start = 0;
+            if self.tab == Tab::Quake {
+                self.scroll = 0;
+                if !self.view.national {
+                    self.view.reset();
+                }
+            }
+        }
+        self.reports = reports;
+    }
+
+    pub fn update(&mut self, now: Instant) -> bool {
         let mut changed = false;
+        let mut reports_changed = false;
+        let mut eew_changed = false;
         while let Ok(message) = self.incoming.try_recv() {
             match message {
-                Reply::Reports(result) => {
-                    self.pending[0] = false;
-                    let status_changed =
-                        !self.received[0] || self.source_error[0] != result.is_err();
-                    self.received[0] = true;
-                    self.source_error[0] = result.is_err();
-                    changed |= self.tab == Tab::Quake && status_changed;
-                    if let Ok(reports) = result
-                        && !Arc::ptr_eq(&self.reports, &reports)
+                Reply::Details(result) => {
+                    self.details.pending = false;
+                    let result = result.map_err(|error| error.to_string());
+                    let error = result.as_ref().err();
+                    changed |= self.details.error.as_ref() != error;
+                    self.details.error = error.cloned();
+                    if let Ok(details) = result
+                        && !Arc::ptr_eq(&self.details.reports, &details)
                     {
-                        let previous = self.reports.get(self.selection[0]);
-                        self.selection[0] =
-                            keep_selection(&self.reports, &reports, self.selection[0], |item| {
-                                &item.id
-                            });
-                        let next = reports.get(self.selection[0]);
-                        if previous.map(|item| &item.id) != next.map(|item| &item.id) {
-                            self.reading_start = 0;
-                            if self.tab == Tab::Quake {
-                                self.scroll = 0;
-                                if !self.view.national {
-                                    self.view.reset();
-                                }
-                            }
-                        }
-                        self.reports = reports;
-                        changed |= self.tab == Tab::Quake;
+                        self.details.reports = details;
+                        reports_changed = true;
                     }
                 }
-                Reply::Eew(update) => match update {
-                    EewUpdate::Connected | EewUpdate::Disconnected => {
-                        let disconnected = matches!(update, EewUpdate::Disconnected);
-                        changed |= self.tab == Tab::Eew
-                            && (!self.received[1] || self.source_error[1] != disconnected);
-                        self.received[1] = true;
-                        self.source_error[1] = disconnected;
-                    }
-                    EewUpdate::Report(report) => {
-                        if let Some(id) = &report.eew_event_id
-                            && !self.received_eew_ids.contains(id)
-                        {
-                            if self.received_eew_ids.len() >= 256 {
-                                self.received_eew_ids.pop_front();
-                            }
-                            self.received_eew_ids.push_back(id.clone());
-                            changed |= self.tab == Tab::Quake;
+                Reply::Live(LiveUpdate::Connection(provider, error)) => {
+                    let connected = error.is_none();
+                    if self.provider != provider {
+                        self.provider = provider;
+                        self.list = Arc::default();
+                        self.eew.switch_source();
+                        self.history_error = None;
+                        self.tsunami_error = None;
+                        self.details.requested = provider == Provider::Wolfx;
+                        self.details.next = now;
+                        if provider == Provider::P2p {
+                            self.tsunami.reference = None;
                         }
-                        if self
-                            .eew
-                            .as_ref()
-                            .is_none_or(|current| current.issued <= report.issued)
-                        {
-                            let tone_changed = self
-                                .eew
-                                .as_ref()
-                                .map(|current| (current.warning, current.eew_cancelled))
-                                != Some((report.warning, report.eew_cancelled));
-                            changed |= tone_changed || self.tab == Tab::Eew;
-                            if self.tab == Tab::Eew
-                                && self
-                                    .eew
-                                    .as_ref()
-                                    .is_none_or(|current| current.issued != report.issued)
-                            {
-                                self.scroll = 0;
-                            }
-                            self.eew = Some(*report);
-                        }
+                        changed = true;
+                    } else if !connected {
+                        self.eew.disconnect();
                     }
-                },
-                Reply::Tsunami(result) => {
-                    let previous_notice = self.quake_notices().tsunami;
-                    self.pending[2] = false;
-                    self.received[2] = true;
-                    self.source_error[2] = result.is_err();
-                    if let Ok(tsunami) = result {
-                        if self
-                            .tsunami
-                            .as_ref()
-                            .map(|previous| (previous.title, previous.issued))
-                            != Some((tsunami.title, tsunami.issued))
-                            && self.tab == Tab::Tsunami
-                        {
-                            self.scroll = 0;
-                        }
-                        self.tsunami = Some(tsunami);
+                    changed |= self.connected != Some(connected) || self.connection_error != error;
+                    self.connected = Some(connected);
+                    self.connection_error = error;
+                }
+                Reply::Live(LiveUpdate::Clock(provider, clock)) => {
+                    eew_changed |= self.eew.sync(clock, now);
+                    if provider == Provider::Wolfx {
+                        self.tsunami.sync_wolfx(clock, now);
                     }
-                    changed |= self.tab == Tab::Tsunami
-                        || (self.tab == Tab::Quake
-                            && previous_notice != self.quake_notices().tsunami);
+                }
+                Reply::Live(LiveUpdate::Eew(report)) => {
+                    eew_changed |= self.eew.receive(report, now)
+                }
+                Reply::Live(LiveUpdate::EewInvalid(reason)) => changed |= self.eew.invalid(&reason),
+                Reply::Live(LiveUpdate::Quakes(list)) => {
+                    self.list = list;
+                    self.history_error = None;
+                    reports_changed = true;
+                    if self.provider == Provider::Wolfx {
+                        self.details.requested = true;
+                        self.details.next = self.details.next.min(now + Duration::from_secs(1));
+                    }
+                }
+                Reply::Live(LiveUpdate::HistoryInvalid(error)) => {
+                    self.history_error = Some(format!("P2P 履歴取得失敗 · {error}"));
+                    changed |= self.tab == Tab::Quake;
+                }
+                Reply::Live(LiveUpdate::Tsunami(report)) => {
+                    self.tsunami.receive(report, now);
+                    self.tsunami_error = None;
+                    if self.tab == Tab::Tsunami {
+                        self.scroll = 0;
+                    }
+                    changed |= matches!(self.tab, Tab::Quake | Tab::Tsunami);
+                }
+                Reply::Live(LiveUpdate::TsunamiInvalid(error)) => {
+                    self.tsunami_error = Some(error);
+                    changed |= self.tab == Tab::Tsunami;
                 }
             }
         }
-        if self.eew.as_ref().is_some_and(|bulletin| !bulletin.fresh()) {
-            self.eew = None;
-            if self.tab == Tab::Eew {
+        if reports_changed {
+            let reports = if self.provider == Provider::Wolfx {
+                data::merge_reports(&self.list, &self.details.reports)
+            } else {
+                Arc::clone(&self.list)
+            };
+            if !reports.is_empty() {
+                self.set_reports(reports);
+            }
+            changed |= self.tab == Tab::Quake;
+        }
+        let expired = self.eew.expire(now);
+        if self.tab == Tab::Eew && (eew_changed || expired) {
+            self.scroll = 0;
+            if expired {
                 self.page = Page::Map;
             }
-            changed = true;
         }
-        if matches!(self.tab, Tab::Quake | Tab::Tsunami) {
-            let current = self
-                .tsunami
-                .as_ref()
-                .is_some_and(|tsunami| tsunami.current(chrono::Utc::now()));
-            changed |= self.tsunami_current != current;
-            self.tsunami_current = current;
-        }
-        for tab in [Tab::Quake, Tab::Tsunami] {
-            let i = tab.index();
-            let visible = self.tab == tab || (tab == Tab::Tsunami && self.tab == Tab::Quake);
-            if !visible || self.pending[i] || now < self.next_refresh[i] {
-                continue;
-            }
-            self.pending[i] = true;
-            self.next_refresh[i] =
-                now + Duration::from_secs(if tab == Tab::Quake { 60 } else { 30 });
+        changed |= eew_changed || expired;
+        changed |= self.tsunami.update(now) && matches!(self.tab, Tab::Quake | Tab::Tsunami);
+
+        if self.provider == Provider::Wolfx
+            && !self.details.pending
+            && (self.details.requested || self.tab == Tab::Quake)
+            && now >= self.details.next
+        {
+            self.details.pending = true;
+            self.details.requested = false;
+            self.details.next = now + Duration::from_secs(60);
             let client = self.client.clone();
             let send = self.send.clone();
             thread::spawn(move || {
-                let reply = if tab == Tab::Quake {
-                    Reply::Reports(client.reports())
-                } else {
-                    Reply::Tsunami(client.tsunami())
-                };
-                let _ = send.send(reply);
+                let _ = send.send(Reply::Details(client.details()));
             });
         }
-        if self.tab == Tab::Demo && self.demo_next.is_some_and(|at| now >= at) {
+        if self.tab == Tab::Demo && self.demo.next.is_some_and(|at| now >= at) {
             let i = &mut self.selection[Tab::Demo.index()];
-            *i = (*i + 1).min(self.demo.len() - 1);
-            self.demo_next = (*i + 1 < self.demo.len()).then(|| now + self.demo_delay);
+            let next = (*i + 1).min(self.demo.frames.len() - 1);
+            *i = next;
+            self.demo.next = (*i + 1 < self.demo.frames.len()).then(|| now + self.demo.delay);
             changed = true;
         }
         changed
     }
 
-    fn current(&self) -> (Cow<'_, Bulletin>, String) {
+    fn current(&self) -> Option<(Cow<'_, Bulletin>, String)> {
         let i = self.tab.index();
         let selected = self.selection[i];
         let (bulletin, banner) = match self.tab {
             Tab::Quake => self.reports.get(selected).map(|report| {
                 (
                     Cow::Borrowed(&report.bulletin),
-                    format!("地震 {}/{} · Wolfx", selected + 1, self.reports.len()),
+                    format!(
+                        "地震 {}/{} · {}",
+                        selected + 1,
+                        self.reports.len(),
+                        report.bulletin.provider.label()
+                    ),
                 )
             }),
-            Tab::Eew => self.eew.as_ref().map(|bulletin| {
+            Tab::Eew => self.eew.active().map(|bulletin| {
                 (
                     Cow::Borrowed(bulletin),
-                    format!("{} · Wolfx", bulletin.label),
+                    format!("{} · {}", bulletin.label, bulletin.provider.label()),
                 )
             }),
-            Tab::Tsunami | Tab::About => unreachable!(),
-            Tab::Demo => self.demo.get(selected).map(|frame| {
-                let mut banner = format!("DEMO 架空 {}/{}", selected + 1, self.demo.len());
+            Tab::Tsunami | Tab::About | Tab::Settings => return None,
+            Tab::Demo => self.demo.frames.get(selected).map(|frame| {
+                let mut banner = format!("DEMO 架空 {}/{}", selected + 1, self.demo.frames.len());
                 if self.page == Page::Text || !frame.eew {
                     banner.push_str("  ");
                     banner.push_str(&frame.label);
@@ -795,13 +1057,21 @@ impl App {
             }),
         }
         .unwrap_or_else(|| {
-            let label = match (self.tab, self.received[i], self.source_error[i]) {
-                (Tab::Eew, _, true) => "EEW接続が切れました。再接続中…",
-                (Tab::Eew, false, _) => "EEWに接続中…",
-                (Tab::Eew, true, false) => "EEWを受信していません",
-                (_, _, true) => "取得できませんでした  R 再取得",
-                (_, false, _) => "取得中…",
-                _ => "地震情報がありません",
+            let label = match (self.tab, self.connected) {
+                (Tab::Eew, Some(false)) => "EEW接続が切れました。再接続中…",
+                (Tab::Eew, None) => "EEWに接続中…",
+                (Tab::Eew, Some(true)) => {
+                    self.eew
+                        .notice()
+                        .unwrap_or(if self.provider == Provider::P2p {
+                            "P2P地震情報（予備） · EEW警報を受信していません"
+                        } else {
+                            "EEWを受信していません"
+                        })
+                }
+                (_, Some(false)) => "地震情報に再接続中…",
+                _ if self.details.error.is_some() => "地震詳細を取得できませんでした",
+                _ => "地震情報を取得中…",
             };
             (
                 Cow::Owned(Bulletin {
@@ -811,29 +1081,26 @@ impl App {
                 self.tab.label().into(),
             )
         });
-        let banner = if self.len() > 0 && self.tab != Tab::Demo && self.source_error[i] {
-            banner
-                + if self.tab == Tab::Eew {
-                    "  再接続中…"
-                } else {
-                    "  更新失敗"
-                }
+        let banner = if self.tab == Tab::Eew && self.connected == Some(false) {
+            banner + "  再接続中…"
         } else {
             banner
         };
-        (bulletin, banner)
+        Some((bulletin, banner))
     }
 
-    pub fn paint(
+    fn paint(
         &mut self,
         renderer: &mut Renderer,
         console: &mut Console,
         display: Display,
+        settings: &SettingsMenu,
+        active_map: Map,
     ) -> Result<()> {
         let items = Tab::ALL.map(|tab| {
             let bulletin = match tab {
-                Tab::Eew => self.eew.as_ref(),
-                Tab::Demo if tab == self.tab => self.demo.get(self.selection[tab.index()]),
+                Tab::Eew => self.eew.active(),
+                Tab::Demo if tab == self.tab => self.demo.frames.get(self.selection[tab.index()]),
                 _ => None,
             };
             let (label, notice) = match (tab, bulletin.filter(|bulletin| bulletin.eew)) {
@@ -856,6 +1123,18 @@ impl App {
             }
         });
         let menu = screen::menu_lines(&items, display);
+        if self.tab == Tab::Settings {
+            let rows = format!("{} 行", settings.draft.history_rows);
+            return Ok(console.paint(&screen::settings(
+                &menu,
+                &settings.entries(&rows),
+                settings.field,
+                settings.draft != settings.saved,
+                (active_map.label() != settings.draft.map.label()).then(|| active_map.label()),
+                settings.notice,
+                display,
+            ))?);
+        }
         if self.tab == Tab::About {
             return Ok(console.paint(&screen::about(&menu, display, &mut self.scroll))?);
         }
@@ -863,36 +1142,60 @@ impl App {
             let (status, alert, lines) = self.tsunami_display();
             let frame = screen::panel(
                 &menu,
-                "津波情報",
-                status,
-                alert,
-                &lines,
+                screen::NoticePanel {
+                    title: "津波情報",
+                    status,
+                    alert,
+                    lines: &lines,
+                    controls: "R 更新  Q 終了",
+                },
                 display,
                 &mut self.scroll,
-                "R 更新  Q 終了",
             );
             return Ok(console.paint(&frame)?);
         }
         if self.page == Page::List && display.width() >= MIN_SPLIT_WIDTH {
             self.page = Page::Map;
         }
-        let (bulletin, banner) = self.current();
-        if self.tab == Tab::Eew && self.eew.is_none() {
+        let Some((bulletin, banner)) = self.current() else {
+            return Ok(());
+        };
+        if self.tab == Tab::Eew && self.eew.active().is_none() {
+            let details = self.connection_error.iter().cloned().collect::<Vec<_>>();
             let mut scroll = 0;
             let frame = screen::panel(
                 &menu,
-                "緊急地震速報",
-                &bulletin.label,
-                false,
-                &[],
+                screen::NoticePanel {
+                    title: "緊急地震速報",
+                    status: &bulletin.label,
+                    alert: false,
+                    lines: &details,
+                    controls: "Q 終了",
+                },
                 display,
                 &mut scroll,
-                "Q 終了",
             );
             return Ok(console.paint(&frame)?);
         }
-        let status = if self.source_error[0] {
-            "取得失敗  R 再取得"
+        let cached_history = self
+            .reports
+            .first()
+            .filter(|report| report.bulletin.provider != self.provider)
+            .map(|report| format!("前回の履歴 · {}", report.bulletin.provider.label()));
+        let status = if let Some(cached) = cached_history.as_deref() {
+            cached
+        } else if self.provider == Provider::P2p {
+            self.history_error
+                .as_deref()
+                .unwrap_or(if self.connected == Some(true) {
+                    "P2P地震情報（予備）"
+                } else {
+                    "P2P地震情報（予備）に接続中…"
+                })
+        } else if self.connected == Some(false) {
+            "Wolfx 再接続中…"
+        } else if let Some(error) = &self.details.error {
+            error.as_str()
         } else {
             ""
         };
@@ -900,6 +1203,7 @@ impl App {
             reports: &self.reports,
             selected: self.selection[0],
             status,
+            row_limit: self.history_rows,
         });
         if self.page == Page::List {
             return Ok(console.paint(&screen::compact(
@@ -910,14 +1214,25 @@ impl App {
         }
         if self.page == Page::Text {
             let mut scroll = self.scroll;
-            let frame = screen::detail(&bulletin, &banner, self.layer, display, &mut scroll, &menu);
+            let frame = screen::detail(
+                &bulletin,
+                &banner,
+                self.layer,
+                self.station_grouping,
+                display,
+                &mut scroll,
+                &menu,
+            );
             self.scroll = scroll;
             return Ok(console.paint(&frame)?);
         }
+        let quake = self.tab == Tab::Quake;
+        let observations = bulletin.has_observations();
+        let has_selection = self.len() > 0;
         let mut viewing = Vec::new();
         let (group, navigation) = match self.tab {
             Tab::Demo => {
-                let playback = if self.demo_next.is_some() {
+                let playback = if self.demo.next.is_some() {
                     "停止"
                 } else {
                     "再生"
@@ -933,26 +1248,22 @@ impl App {
                 let mut navigation = vec![("↑↓", "地震を選ぶ")];
                 if display.width() < MIN_SPLIT_WIDTH {
                     navigation.push(("B", "履歴を開く"));
-                } else if bulletin.has_observations() {
+                } else {
                     navigation.push(("←→", "震度一覧をスクロール"));
                 }
-                if self.len() > 0 {
-                    navigation.push(("Enter", "震源周辺へ"));
-                }
+                navigation.push(("Enter", "震源周辺へ"));
                 viewing.push(("R", "情報を更新"));
                 ("地震", navigation)
             }
             Tab::Eew => ("EEW", Vec::new()),
-            Tab::Tsunami | Tab::About => unreachable!(),
+            Tab::Tsunami | Tab::About | Tab::Settings => unreachable!(),
         };
-        if bulletin.has_observations() {
+        let show_layer = quake || observations;
+        if show_layer {
             viewing.insert(0, ("V", "広域/観測点"));
         }
-        if self.len() > 0 {
-            viewing.insert(
-                usize::from(bulletin.has_observations()),
-                ("I", "詳細を開く"),
-            );
+        if quake || has_selection {
+            viewing.insert(usize::from(show_layer), ("I", "詳細を開く"));
         }
         viewing.push(("Q", "終了"));
         let map_controls = [
@@ -972,7 +1283,7 @@ impl App {
             }
         }
         let series = if self.tab == Tab::Demo {
-            &self.demo
+            &self.demo.frames
         } else {
             &[] as &[Bulletin]
         };
@@ -980,18 +1291,19 @@ impl App {
         let scene = Scene {
             bulletin: &bulletin,
             banner: if live_eew {
-                if self.source_error[Tab::Eew.index()] {
+                if self.connected == Some(false) {
                     "再接続中…"
                 } else {
-                    ""
+                    self.eew.notice().unwrap_or_default()
                 }
             } else {
                 &banner
             },
-            eew_source: live_eew.then_some("Wolfx"),
+            eew_source: live_eew.then_some(bulletin.provider.label()),
             series,
             view: self.view,
             layer: self.layer,
+            station_grouping: self.station_grouping,
             controls: &controls,
             history,
             menu: &menu,
@@ -1013,44 +1325,74 @@ impl App {
         let Some(report) = self.reports.get(self.selection[Tab::Quake.index()]) else {
             return QuakeNotices::default();
         };
-        let received = self.received_eew_ids.contains(&report.id);
+        let received = self.eew.matches(&report.id);
         let eew = received.then_some(true).or(report.bulletin.eew_notice);
         let tsunami = self
             .tsunami
-            .as_ref()
-            .filter(|tsunami| tsunami.current(chrono::Utc::now()))
+            .verified(self.provider)
             .and_then(|tsunami| tsunami.notice_for(&report.id))
             .or(report.bulletin.tsunami_notice);
         QuakeNotices { eew, tsunami }
     }
 
     fn tsunami_display(&self) -> (&'static str, bool, Vec<String>) {
-        let failed = self.source_error[2];
-        let Some(tsunami) = &self.tsunami else {
-            return (
-                if failed {
-                    "津波情報を取得できませんでした"
-                } else {
-                    "津波情報を取得中…"
-                },
-                false,
-                Vec::new(),
-            );
-        };
         let mut lines = Vec::new();
-        let status = if self.tsunami_current {
-            if let Some(issued) = tsunami.issued {
-                lines.push(format!("気象庁 発表 {} JST", issued.format("%m/%d %H:%M")));
-            }
-            lines.extend(tsunami.areas.iter().cloned());
-            tsunami.title
-        } else {
-            "現在の津波の状況を確認できません"
-        };
-        if failed {
-            lines.insert(0, "Wolfx の更新に失敗しました".into());
+        if self.provider == Provider::P2p {
+            lines.push("ライブ配信 · P2P地震情報（予備）".into());
         }
-        (status, self.tsunami_current && tsunami.alert, lines)
+        if let Some(error) = &self.connection_error {
+            lines.push(format!("接続を確認中 · {error}"));
+        }
+        if let Some(error) = &self.tsunami_error {
+            lines.push(format!("津波情報を読み取れません · {error}"));
+        }
+        if let Some(report) = self.tsunami.verified(self.provider) {
+            if let Some(issued) = report.issued {
+                lines.push(format!(
+                    "気象庁 発表 {} JST · Wolfx",
+                    issued.format("%m/%d %H:%M")
+                ));
+            }
+            if let Some(until) = report.valid_until {
+                lines.push(format!(
+                    "配信確認期限 {} JST",
+                    until.format("%m/%d %H:%M:%S")
+                ));
+            }
+            lines.extend(report.areas.iter().cloned());
+            return (report.title, report.alert, lines);
+        }
+        if self.provider == Provider::P2p {
+            if let Some(report) = &self.tsunami.reference {
+                if let Some(issued) = report.issued {
+                    lines.push(format!(
+                        "気象庁 発表 {} JST · P2P地震情報",
+                        issued.format("%m/%d %H:%M")
+                    ));
+                }
+                lines.push(report.title.into());
+                lines.extend(report.areas.iter().cloned());
+            }
+            return ("現在の津波状況は未確認", false, lines);
+        }
+        let status = match self.tsunami.validity {
+            Validity::AwaitingClock => "Wolfxの時刻を確認中…",
+            Validity::Expired => "配信確認期限を過ぎました · 現況未確認",
+            _ if self.tsunami.wolfx.is_none() => "津波情報を取得中…",
+            _ => "現在の津波状況は未確認",
+        };
+        if let Some(until) = self
+            .tsunami
+            .wolfx
+            .as_ref()
+            .and_then(|report| report.valid_until)
+        {
+            lines.push(format!(
+                "配信確認期限 {} JST · Wolfx",
+                until.format("%m/%d %H:%M:%S")
+            ));
+        }
+        (status, false, lines)
     }
 }
 
@@ -1066,13 +1408,13 @@ fn keep_selection<T>(old: &[T], next: &[T], selected: usize, key: impl Fn(&T) ->
 const SIXEL_RESIZE_QUIET: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
-struct ResizeRedraw {
+pub struct ResizeRedraw {
     dimensions: Option<(usize, usize)>,
     sixel_at: Option<Instant>,
 }
 
 impl ResizeRedraw {
-    fn update(&mut self, view: &mut Display, now: Instant) -> bool {
+    pub fn update(&mut self, view: &mut Display, now: Instant) -> bool {
         let dimensions = (view.columns, view.rows);
         let previous = self.dimensions.replace(dimensions);
         let changed = previous != Some(dimensions);
@@ -1094,22 +1436,28 @@ pub fn run(
     client: Client,
     renderer: &mut Renderer,
     colors: bool,
-    map: Option<Map>,
+    map_override: Option<MapMode>,
     delay: Duration,
     national: bool,
 ) -> Result<()> {
     let mut console = Console::enter()?;
-    let map = if let Some(map) = map {
-        map
-    } else {
-        let Some(map) = choose_map(&mut console, colors)? else {
+    let capabilities = graphics::detect();
+    let mut settings = SettingsMenu::load();
+    let mode = map_override.unwrap_or(settings.saved.map);
+    let mut map = if mode == MapMode::Auto {
+        let Some(map) = choose_map(&mut console, colors, &capabilities)? else {
             return Ok(());
         };
         map
+    } else if map_override.is_some() {
+        mode.resolve(true, Capabilities::default)
+    } else {
+        mode.supported(&capabilities).unwrap_or(Map::Braille)
     };
-    let mut app = App::new(client, delay, national);
-    let send = app.send.clone();
-    thread::spawn(move || data::stream_eew(|update| send.send(Reply::Eew(update)).is_ok()));
+    let mut app = App::start(client, delay, national || settings.saved.national);
+    app.layer = settings.saved.layer;
+    app.station_grouping = settings.saved.station_grouping;
+    app.history_rows = settings.saved.history_rows;
     let mut resize = ResizeRedraw::default();
     loop {
         let mut changed = app.update(Instant::now());
@@ -1126,7 +1474,13 @@ pub fn run(
                     } else {
                         key.code
                     };
-                    changed |= app.select(code, display(colors, map).width(), Instant::now());
+                    changed |= if app.tab == Tab::Settings
+                        && settings.handle(code, &mut app, &mut map, &capabilities)
+                    {
+                        true
+                    } else {
+                        app.select(code, display(colors, map).width(), Instant::now())
+                    };
                 }
                 _ => {}
             }
@@ -1137,7 +1491,7 @@ pub fn run(
             if app.tab == Tab::About {
                 view.map = map;
             }
-            app.paint(renderer, &mut console, view)?;
+            app.paint(renderer, &mut console, view, &settings, map)?;
         }
     }
 }

@@ -43,13 +43,22 @@ pub const PALETTE: [Rgb; 23] = [
     (158, 95, 235),
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Layer {
+    #[default]
     Regions,
     Stations,
 }
 
 impl Layer {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Regions => Self::Stations,
+            Self::Stations => Self::Regions,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Regions => "広域",

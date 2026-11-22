@@ -6,6 +6,8 @@
 
 ## 起動する
 
+### Windows
+
 Windows Terminal の PowerShell で、ソースを取得してビルドします。準備するのは [Git](https://git-scm.com/install/windows)、[Rust](https://rust-lang.org/tools/install/)、[Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) です。
 
 ```powershell
@@ -13,6 +15,17 @@ git clone https://github.com/hirokawa-beach/TuiQuake.git
 cd TuiQuake
 cargo build --release --locked
 .\target\release\tuiquake.exe
+```
+
+### Linux / macOS
+
+[Rust](https://rust-lang.org/tools/install/) と Git、Cコンパイラを用意します。Ubuntu なら `sudo apt install build-essential git`、macOS なら `xcode-select --install` で開発ツールを用意できます。
+
+```bash
+git clone https://github.com/hirokawa-beach/TuiQuake.git
+cd TuiQuake
+cargo build --release --locked
+./target/release/tuiquake
 ```
 
 初期設定では、起動時に地図の描画方式を選べます。迷ったら **Unicode Braille** を選んで `Enter`。端末が対応していれば、Sixel や Kitty の画像描画も選べます。
@@ -54,9 +67,14 @@ cargo build --release --locked
 ## 速報と津波情報を見る
 
 - **`2` 緊急地震速報** — 受信中の速報を表示します。見出しは**予報が黄色、警報が赤**。報数と推定最大震度を確認できます。速報に地域別の予想震度が含まれていれば一覧に表示し、`I` ですべての地域を確認できます。警報時は対象地域も地図に表示します。他のタブを開いていても速報は受信し、上部のメニューに知らせます。
+
+EEWの表示対象は、配信元のサーバー時刻で発表から120秒未満の報です。時刻を確認できない場合や、120秒以上経過した報を受信した場合はEEWタブに理由を表示します。
+
 - **`3` 津波情報** — 津波警報・注意報・予報の状況を表示します。発表データに含まれていれば、対象地域や第1波の見込みも確認できます。
 
-地震一覧・EEW・津波情報は Wolfx の WebSocket で受信します。各地の震度などの地震詳細は HTTP で取得します。
+Wolfx の津波情報は、信頼期限が確認できる間だけ現在の状況として表示します。津波タブに配信確認期限を JST で表示し、通信が途切れても期限に達すると「現況未確認」に切り替わります。
+
+地震一覧・EEW・津波情報は通常 Wolfx の WebSocket で受信し、地震詳細は Wolfx の HTTP API で取得します。Wolfx のライブ配信に接続できない場合や応答が途切れた場合は、自動で P2P地震情報に切り替え、Wolfx が復旧すると戻ります。P2P の EEW は警報が対象です。P2P の津波情報は発表内容を閲覧でき、現況は未確認と表示します。
 
 > TuiQuake は非公式の閲覧用アプリです。配信や通信による遅延・欠落があるため、防災時は気象庁や自治体の公式情報を確認してください。
 
@@ -68,7 +86,7 @@ cargo build --release --locked
 | コマンド | 表示内容 |
 |---|---|
 | `latest` | 最新の地震 |
-| `eew` | Wolfx の最新の緊急地震速報1報 |
+| `eew` | 最新の緊急地震速報1報（P2Pへの切り替え時は警報） |
 | `replay` | 架空の地震と速報のデモ。オフラインで実行でき、`--delay 4` で4秒間隔に変更 |
 | `replay --history` | `eew` と同じ最新1報 |
 | `watch` | 地震と緊急地震速報を受信し次第更新 |
@@ -87,6 +105,7 @@ cargo build --release --locked
 TuiQuake のオリジナルコードは [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）です。Windows 版の依存ライブラリのライセンスは [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に掲載しています。
 
 - **地震・EEW・津波** — データ提供 Wolfx Project。気象庁発表の情報を [Wolfx WebSocket](https://wolfx.jp/docs/websocket/) と [Wolfx Open API](https://wolfx.jp/docs/open-api/) 経由で取得します。データを使う機能は無償で提供します。 [Wolfx Project の利用規約](https://wolfx.jp/legal/terms/)
+- **予備配信** — P2P地震情報。 [P2P地震情報 API](https://www.p2pquake.net/develop/json_api_v2/) [二次利用ガイドライン](https://www.p2pquake.net/secondary_use/)
 - **震度観測点と区域** — 気象庁の [震度観測点一覧](https://www.data.jma.go.jp/eqev/data/bulletin/shindo.html) と [予報区等GISデータ「地震情報／細分区域」](https://www.data.jma.go.jp/developer/gis.html) を TuiQuake が加工しました。 [気象庁ホームページの利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)
 - **湖沼** — 国土交通省の [国土数値情報（湖沼データ W09、平成17年版）](https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-W09-v2_2.html) から面積10 km²以上の湖沼を抽出し、TuiQuake が輪郭を簡略化しました。整備時点と現在の湖岸線には差がある場合があります。「商用可」の条件が適用されます。 [国土数値情報の利用規約](https://nlftp.mlit.go.jp/ksj/other/agreement_02.html)
 - **周辺陸地** — [Natural Earth 1:50m Land](https://www.naturalearthdata.com/downloads/50m-physical-vectors/50m-land/) のうち、東経110〜159度・北緯18〜55度の範囲を TuiQuake が切り出しました。 [Natural Earth の利用条件（パブリックドメイン）](https://www.naturalearthdata.com/about/terms-of-use/)

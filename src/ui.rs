@@ -1,6 +1,5 @@
 use std::{
     borrow::Cow,
-    collections::VecDeque,
     fmt::Write as _,
     io::{self, IsTerminal, Write},
     path::PathBuf,
@@ -19,8 +18,10 @@ use crossterm::{
 
 use crate::{
     data::{
-        self, Bulletin, Client, INTENSITIES, Level, LiveQuery, LiveUpdate, Report, Result, Tsunami,
+        self, Bulletin, Client, INTENSITIES, Level, LiveQuery, LiveUpdate, Provider, Report,
+        Result, Source,
     },
+    eew,
     graphics::{self, Capabilities, Image, KITTY_COMMAND, Map, MapMode},
     map::{Layer, View},
     screen::{
@@ -28,6 +29,7 @@ use crate::{
         Renderer, Scene,
     },
     settings::{DEFAULT_HISTORY_ROWS, MAX_HISTORY_ROWS, Settings, StationGrouping},
+    tsunami::{self, Validity},
 };
 
 pub fn tty() -> bool {
@@ -339,37 +341,49 @@ mod tests {
         let now = Instant::now();
         let mut app = App::new(Client::new(), Duration::from_secs(2), false);
         assert!(app.select(KeyCode::Char('4'), 80, now));
-        let original = app.current().0.into_owned();
-        assert!(app.demo_next.is_none());
+        let original = app.current().unwrap().0.into_owned();
+        assert!(app.demo.next.is_none());
 
         assert!(app.select(KeyCode::Char(' '), 80, now));
-        assert!(app.demo_next.is_some());
+        assert!(app.demo.next.is_some());
         assert!(app.select(KeyCode::Right, 80, now));
-        assert!(app.demo_next.is_none());
-        assert_eq!(app.current().0.maximum.as_ref().unwrap().label(), "5強");
+        assert!(app.demo.next.is_none());
+        assert_eq!(
+            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
+            "5強"
+        );
         for _ in 0..4 {
             assert!(app.select(KeyCode::Right, 80, now));
         }
-        assert_eq!(app.current().0.maximum.as_ref().unwrap().label(), "1");
+        assert_eq!(
+            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
+            "1"
+        );
 
         assert!(app.select(KeyCode::Char('f'), 80, now));
-        assert!(!app.current().0.warning);
-        assert!(app.current().0.label.contains("予報"));
-        assert!(app.current().0.warning_areas.is_empty());
+        assert!(!app.current().unwrap().0.warning);
+        assert!(app.current().unwrap().0.label.contains("予報"));
+        assert!(app.current().unwrap().0.warning_areas.is_empty());
         assert!(app.select(KeyCode::Char('f'), 80, now));
-        assert_eq!(app.current().0.warning_areas, original.warning_areas);
-        assert_eq!(app.current().0.label, original.label);
+        assert_eq!(
+            app.current().unwrap().0.warning_areas,
+            original.warning_areas
+        );
+        assert_eq!(app.current().unwrap().0.label, original.label);
 
         assert!(app.select(KeyCode::Char('r'), 80, now));
-        assert_eq!(app.current().0.maximum.as_ref().unwrap().label(), "5弱");
-        assert!(app.demo_next.is_none());
+        assert_eq!(
+            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
+            "5弱"
+        );
+        assert!(app.demo.next.is_none());
     }
 
     #[test]
     fn live_eew_alert_changes_refresh_the_quake_menu_and_match_by_id() {
         let now = Instant::now();
         let mut app = App::new(Client::new(), Duration::from_secs(2), false);
-        app.next_detail = now + Duration::from_secs(60);
+        app.details.next = now + Duration::from_secs(60);
         app.reports = vec![Report {
             id: "demo-event".into(),
             bulletin: Bulletin::default(),
@@ -382,6 +396,15 @@ mod tests {
             ..Bulletin::default()
         };
         app.send
+            .send(Reply::Live(LiveUpdate::Clock(
+                Provider::Wolfx,
+                data::ServerClock {
+                    utc: eew.issued.unwrap().to_utc(),
+                    received: now,
+                },
+            )))
+            .unwrap();
+        app.send
             .send(Reply::Live(LiveUpdate::Eew(Box::new(eew.clone()))))
             .unwrap();
         assert!(app.update(now));
@@ -392,7 +415,7 @@ mod tests {
             .send(Reply::Live(LiveUpdate::Eew(Box::new(eew))))
             .unwrap();
         assert!(app.update(now));
-        assert!(app.eew.unwrap().warning);
+        assert!(app.eew.active().unwrap().warning);
     }
 
     #[test]
@@ -487,10 +510,11 @@ pub fn wait_or_quit(delay: Duration) -> Result<bool> {
         if left.is_zero() || !event::poll(left)? {
             return Ok(false);
         }
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Release && quit(key) {
-                return Ok(true);
-            }
+        if let Event::Key(key) = event::read()?
+            && key.kind != KeyEventKind::Release
+            && quit(key)
+        {
+            return Ok(true);
         }
     }
 }
@@ -546,8 +570,47 @@ enum Reply {
     Live(LiveUpdate),
 }
 
+struct DemoState {
+    frames: Vec<Bulletin>,
+    hidden_areas: Vec<Vec<String>>,
+    delay: Duration,
+    next: Option<Instant>,
+}
+
+impl DemoState {
+    fn new(delay: Duration) -> Self {
+        let frames = data::demo();
+        Self {
+            hidden_areas: vec![Vec::new(); frames.len()],
+            frames,
+            delay: delay.max(Duration::from_millis(150)),
+            next: None,
+        }
+    }
+}
+
+struct DetailsState {
+    reports: Arc<[Report]>,
+    next: Instant,
+    requested: bool,
+    pending: bool,
+    error: Option<String>,
+}
+
+impl DetailsState {
+    fn new(now: Instant) -> Self {
+        Self {
+            reports: Arc::default(),
+            next: now,
+            requested: true,
+            pending: false,
+            error: None,
+        }
+    }
+}
+
 pub struct App {
-    client: Client,
+    client: Arc<dyn Source>,
     send: Sender<Reply>,
     incoming: Receiver<Reply>,
     tab: Tab,
@@ -561,31 +624,24 @@ pub struct App {
     history_rows: usize,
     reports: Arc<[Report]>,
     list: Arc<[Report]>,
-    details: Arc<[Report]>,
+    details: DetailsState,
     queries: Option<Sender<LiveQuery>>,
+    provider: Provider,
     connected: Option<bool>,
-    eew: Option<Bulletin>,
-    received_eew_ids: VecDeque<String>,
-    tsunami: Option<Tsunami>,
-    tsunami_current: bool,
-    demo: Vec<Bulletin>,
-    demo_hidden_areas: Vec<Vec<String>>,
-    demo_delay: Duration,
-    demo_next: Option<Instant>,
-    next_detail: Instant,
-    detail_requested: bool,
-    detail_pending: bool,
-    detail_error: bool,
+    connection_error: Option<String>,
+    history_error: Option<String>,
+    eew: eew::State,
+    tsunami: tsunami::State,
+    tsunami_error: Option<String>,
+    demo: DemoState,
 }
 
 impl App {
-    fn new(client: Client, delay: Duration, national: bool) -> Self {
+    fn new(client: impl Source + 'static, delay: Duration, national: bool) -> Self {
         let (send, incoming) = mpsc::channel();
         let now = Instant::now();
-        let demo = data::demo();
-        let demo_hidden_areas = vec![Vec::new(); demo.len()];
         Self {
-            client,
+            client: Arc::new(client),
             send,
             incoming,
             tab: Tab::Quake,
@@ -599,56 +655,60 @@ impl App {
             history_rows: DEFAULT_HISTORY_ROWS,
             reports: Arc::default(),
             list: Arc::default(),
-            details: Arc::default(),
+            details: DetailsState::new(now),
             queries: None,
+            provider: Provider::Wolfx,
             connected: None,
-            eew: None,
-            received_eew_ids: VecDeque::new(),
-            tsunami: None,
-            tsunami_current: false,
-            demo,
-            demo_hidden_areas,
-            demo_delay: delay.max(Duration::from_millis(150)),
-            demo_next: None,
-            next_detail: now,
-            detail_requested: true,
-            detail_pending: false,
-            detail_error: false,
+            connection_error: None,
+            history_error: None,
+            eew: eew::State::default(),
+            tsunami: tsunami::State::default(),
+            tsunami_error: None,
+            demo: DemoState::new(delay),
         }
     }
 
-    pub fn start(client: Client, delay: Duration, national: bool) -> Self {
+    pub fn start(client: impl Source + 'static, delay: Duration, national: bool) -> Self {
         let mut app = Self::new(client, delay, national);
         let (send_queries, queries) = mpsc::channel();
         app.queries = Some(send_queries);
         let send = app.send.clone();
+        let client = Arc::clone(&app.client);
         thread::spawn(move || {
-            data::stream_live(queries, |update| send.send(Reply::Live(update)).is_ok())
+            client.stream(queries, &mut |update| {
+                send.send(Reply::Live(update)).is_ok()
+            });
         });
         app
     }
 
     pub fn newest(&self) -> Option<&Bulletin> {
         self.eew
-            .as_ref()
+            .active()
             .or_else(|| self.reports.first().map(|report| &report.bulletin))
     }
 
-    pub fn live_status(&self) -> &'static str {
+    pub fn live_status(&self) -> &str {
         match self.connected {
-            Some(false) => "Wolfx 再接続中…",
+            Some(false) => self.connection_error.as_deref().unwrap_or("再接続中…"),
             None => "Wolfx 接続中…",
-            _ if self.detail_error => "地震詳細の取得失敗",
-            _ => "Wolfx",
+            _ if self.eew.active().is_none() && self.eew.notice().is_some() => {
+                self.eew.notice().unwrap()
+            }
+            _ if self.provider == Provider::P2p => self
+                .history_error
+                .as_deref()
+                .unwrap_or("P2P地震情報（予備）"),
+            _ => self.details.error.as_deref().unwrap_or("Wolfx"),
         }
     }
 
     fn len(&self) -> usize {
         match self.tab {
             Tab::Quake => self.reports.len(),
-            Tab::Eew => usize::from(self.eew.is_some()),
+            Tab::Eew => usize::from(self.eew.active().is_some()),
             Tab::Tsunami | Tab::About | Tab::Settings => 0,
-            Tab::Demo => self.demo.len(),
+            Tab::Demo => self.demo.frames.len(),
         }
     }
 
@@ -657,7 +717,7 @@ impl App {
             self.view.reset();
             if next == Tab::Demo {
                 self.selection[next.index()] = 0;
-                self.demo_next = None;
+                self.demo.next = None;
             }
         }
         self.tab = next;
@@ -709,7 +769,10 @@ impl App {
                 self.scroll = 0;
             }
             KeyCode::Char('v')
-                if self.page != Page::List && self.current().0.has_observations() =>
+                if self.page != Page::List
+                    && self
+                        .current()
+                        .is_some_and(|(report, _)| report.has_observations()) =>
             {
                 self.layer = self.layer.other();
                 self.scroll = 0;
@@ -746,35 +809,33 @@ impl App {
                             self.view.reset();
                         }
                     }
-                    self.demo_next = None;
+                    self.demo.next = None;
                 }
             }
             KeyCode::Char(' ') if self.tab == Tab::Demo => {
                 self.page = Page::Map;
-                if self.demo_next.take().is_none() {
+                if self.demo.next.take().is_none() {
                     let selected = &mut self.selection[self.tab.index()];
-                    if *selected + 1 == self.demo.len() {
+                    if *selected + 1 == self.demo.frames.len() {
                         *selected = 0;
                     }
-                    self.demo_next = Some(now + self.demo_delay);
+                    self.demo.next = Some(now + self.demo.delay);
                 }
             }
             KeyCode::Char('r') if self.tab == Tab::Demo => {
-                self.demo = data::demo();
-                self.demo_hidden_areas = vec![Vec::new(); self.demo.len()];
+                self.demo = DemoState::new(self.demo.delay);
                 self.selection[self.tab.index()] = 0;
-                self.demo_next = None;
                 self.page = Page::Map;
                 self.scroll = 0;
                 self.view.reset();
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char('f') if self.tab == Tab::Demo => {
                 let index = self.selection[self.tab.index()];
-                let bulletin = &mut self.demo[index];
+                let bulletin = &mut self.demo.frames[index];
                 if !bulletin.eew || self.page != Page::Map {
                     return false;
                 }
-                self.demo_next = None;
+                self.demo.next = None;
                 if key == KeyCode::Char('f') {
                     let previous = if bulletin.warning { "警報" } else { "予報" };
                     let next = if bulletin.warning { "予報" } else { "警報" };
@@ -782,7 +843,7 @@ impl App {
                     bulletin.warning = !bulletin.warning;
                     std::mem::swap(
                         &mut bulletin.warning_areas,
-                        &mut self.demo_hidden_areas[index],
+                        &mut self.demo.hidden_areas[index],
                     );
                 } else {
                     let current = bulletin
@@ -811,8 +872,8 @@ impl App {
                 let query = match self.tab {
                     Tab::Tsunami => LiveQuery::Tsunami,
                     _ => {
-                        self.next_detail = now;
-                        self.detail_requested = true;
+                        self.details.next = now;
+                        self.details.requested = true;
                         LiveQuery::Quakes
                     }
                 };
@@ -842,136 +903,152 @@ impl App {
         self.reports = reports;
     }
 
-    fn receive_eew(&mut self, report: Bulletin) -> bool {
-        if !report.fresh()
-            || self
-                .eew
-                .as_ref()
-                .is_some_and(|old| old.issued > report.issued)
-        {
-            return false;
-        }
-        if let Some(id) = &report.eew_event_id
-            && !self.received_eew_ids.contains(id)
-        {
-            if self.received_eew_ids.len() >= 256 {
-                self.received_eew_ids.pop_front();
-            }
-            self.received_eew_ids.push_back(id.clone());
-        }
-        if self.tab == Tab::Eew
-            && self
-                .eew
-                .as_ref()
-                .is_none_or(|old| old.issued != report.issued)
-        {
-            self.scroll = 0;
-        }
-        self.eew = Some(report);
-        true
-    }
-
     pub fn update(&mut self, now: Instant) -> bool {
         let mut changed = false;
         let mut reports_changed = false;
+        let mut eew_changed = false;
         while let Ok(message) = self.incoming.try_recv() {
             match message {
                 Reply::Details(result) => {
-                    self.detail_pending = false;
-                    changed |= self.detail_error != result.is_err();
-                    self.detail_error = result.is_err();
+                    self.details.pending = false;
+                    let result = result.map_err(|error| error.to_string());
+                    let error = result.as_ref().err();
+                    changed |= self.details.error.as_ref() != error;
+                    self.details.error = error.cloned();
                     if let Ok(details) = result
-                        && !Arc::ptr_eq(&self.details, &details)
+                        && !Arc::ptr_eq(&self.details.reports, &details)
                     {
-                        self.details = details;
+                        self.details.reports = details;
                         reports_changed = true;
                     }
                 }
-                Reply::Live(LiveUpdate::Connection(connected)) => {
-                    changed |= self.connected != Some(connected);
+                Reply::Live(LiveUpdate::Connection(provider, error)) => {
+                    let connected = error.is_none();
+                    if self.provider != provider {
+                        self.provider = provider;
+                        self.list = Arc::default();
+                        self.eew.switch_source();
+                        self.history_error = None;
+                        self.tsunami_error = None;
+                        self.details.requested = provider == Provider::Wolfx;
+                        self.details.next = now;
+                        if provider == Provider::P2p {
+                            self.tsunami.reference = None;
+                        }
+                        changed = true;
+                    } else if !connected {
+                        self.eew.disconnect();
+                    }
+                    changed |= self.connected != Some(connected) || self.connection_error != error;
                     self.connected = Some(connected);
+                    self.connection_error = error;
                 }
-                Reply::Live(LiveUpdate::Eew(report)) => changed |= self.receive_eew(*report),
+                Reply::Live(LiveUpdate::Clock(provider, clock)) => {
+                    eew_changed |= self.eew.sync(clock, now);
+                    if provider == Provider::Wolfx {
+                        self.tsunami.sync_wolfx(clock, now);
+                    }
+                }
+                Reply::Live(LiveUpdate::Eew(report)) => {
+                    eew_changed |= self.eew.receive(report, now)
+                }
+                Reply::Live(LiveUpdate::EewInvalid(reason)) => changed |= self.eew.invalid(&reason),
                 Reply::Live(LiveUpdate::Quakes(list)) => {
                     self.list = list;
+                    self.history_error = None;
                     reports_changed = true;
-                    self.detail_requested = true;
-                    self.next_detail = self.next_detail.min(now + Duration::from_secs(1));
+                    if self.provider == Provider::Wolfx {
+                        self.details.requested = true;
+                        self.details.next = self.details.next.min(now + Duration::from_secs(1));
+                    }
                 }
-                Reply::Live(LiveUpdate::Tsunami(tsunami)) => {
-                    let previous_notice = self.quake_notices().tsunami;
-                    if self.tab == Tab::Tsunami
-                        && self.tsunami.as_ref().map(|old| (old.title, old.issued))
-                            != Some((tsunami.title, tsunami.issued))
-                    {
+                Reply::Live(LiveUpdate::HistoryInvalid(error)) => {
+                    self.history_error = Some(format!("P2P 履歴取得失敗 · {error}"));
+                    changed |= self.tab == Tab::Quake;
+                }
+                Reply::Live(LiveUpdate::Tsunami(report)) => {
+                    self.tsunami.receive(report, now);
+                    self.tsunami_error = None;
+                    if self.tab == Tab::Tsunami {
                         self.scroll = 0;
                     }
-                    self.tsunami = Some(tsunami);
-                    changed |= self.tab == Tab::Tsunami
-                        || (self.tab == Tab::Quake
-                            && previous_notice != self.quake_notices().tsunami);
+                    changed |= matches!(self.tab, Tab::Quake | Tab::Tsunami);
+                }
+                Reply::Live(LiveUpdate::TsunamiInvalid(error)) => {
+                    self.tsunami_error = Some(error);
+                    changed |= self.tab == Tab::Tsunami;
                 }
             }
         }
         if reports_changed {
-            self.set_reports(data::merge_reports(&self.list, &self.details));
+            let reports = if self.provider == Provider::Wolfx {
+                data::merge_reports(&self.list, &self.details.reports)
+            } else {
+                Arc::clone(&self.list)
+            };
+            if !reports.is_empty() {
+                self.set_reports(reports);
+            }
             changed |= self.tab == Tab::Quake;
         }
-        if self.eew.as_ref().is_some_and(|bulletin| !bulletin.fresh()) {
-            self.eew = None;
-            if self.tab == Tab::Eew {
+        let expired = self.eew.expire(now);
+        if self.tab == Tab::Eew && (eew_changed || expired) {
+            self.scroll = 0;
+            if expired {
                 self.page = Page::Map;
             }
-            changed = true;
         }
-        let current = self
-            .tsunami
-            .as_ref()
-            .is_some_and(|tsunami| tsunami.current(chrono::Utc::now()));
-        changed |= self.tsunami_current != current && matches!(self.tab, Tab::Quake | Tab::Tsunami);
-        self.tsunami_current = current;
+        changed |= eew_changed || expired;
+        changed |= self.tsunami.update(now) && matches!(self.tab, Tab::Quake | Tab::Tsunami);
 
-        if !self.detail_pending
-            && (self.detail_requested || self.tab == Tab::Quake)
-            && now >= self.next_detail
+        if self.provider == Provider::Wolfx
+            && !self.details.pending
+            && (self.details.requested || self.tab == Tab::Quake)
+            && now >= self.details.next
         {
-            self.detail_pending = true;
-            self.detail_requested = false;
-            self.next_detail = now + Duration::from_secs(60);
+            self.details.pending = true;
+            self.details.requested = false;
+            self.details.next = now + Duration::from_secs(60);
             let client = self.client.clone();
             let send = self.send.clone();
             thread::spawn(move || {
                 let _ = send.send(Reply::Details(client.details()));
             });
         }
-        if self.tab == Tab::Demo && self.demo_next.is_some_and(|at| now >= at) {
+        if self.tab == Tab::Demo && self.demo.next.is_some_and(|at| now >= at) {
             let i = &mut self.selection[Tab::Demo.index()];
-            *i = (*i + 1).min(self.demo.len() - 1);
-            self.demo_next = (*i + 1 < self.demo.len()).then(|| now + self.demo_delay);
+            let next = (*i + 1).min(self.demo.frames.len() - 1);
+            *i = next;
+            self.demo.next = (*i + 1 < self.demo.frames.len()).then(|| now + self.demo.delay);
             changed = true;
         }
         changed
     }
 
-    fn current(&self) -> (Cow<'_, Bulletin>, String) {
+    fn current(&self) -> Option<(Cow<'_, Bulletin>, String)> {
         let i = self.tab.index();
         let selected = self.selection[i];
         let (bulletin, banner) = match self.tab {
             Tab::Quake => self.reports.get(selected).map(|report| {
                 (
                     Cow::Borrowed(&report.bulletin),
-                    format!("地震 {}/{} · Wolfx", selected + 1, self.reports.len()),
+                    format!(
+                        "地震 {}/{} · {}",
+                        selected + 1,
+                        self.reports.len(),
+                        report.bulletin.provider.label()
+                    ),
                 )
             }),
-            Tab::Eew => self.eew.as_ref().map(|bulletin| {
+            Tab::Eew => self.eew.active().map(|bulletin| {
                 (
                     Cow::Borrowed(bulletin),
-                    format!("{} · Wolfx", bulletin.label),
+                    format!("{} · {}", bulletin.label, bulletin.provider.label()),
                 )
             }),
-            Tab::Tsunami | Tab::About | Tab::Settings => unreachable!(),
-            Tab::Demo => self.demo.get(selected).map(|frame| {
-                let mut banner = format!("DEMO 架空 {}/{}", selected + 1, self.demo.len());
+            Tab::Tsunami | Tab::About | Tab::Settings => return None,
+            Tab::Demo => self.demo.frames.get(selected).map(|frame| {
+                let mut banner = format!("DEMO 架空 {}/{}", selected + 1, self.demo.frames.len());
                 if self.page == Page::Text || !frame.eew {
                     banner.push_str("  ");
                     banner.push_str(&frame.label);
@@ -983,9 +1060,17 @@ impl App {
             let label = match (self.tab, self.connected) {
                 (Tab::Eew, Some(false)) => "EEW接続が切れました。再接続中…",
                 (Tab::Eew, None) => "EEWに接続中…",
-                (Tab::Eew, Some(true)) => "EEWを受信していません",
+                (Tab::Eew, Some(true)) => {
+                    self.eew
+                        .notice()
+                        .unwrap_or(if self.provider == Provider::P2p {
+                            "P2P地震情報（予備） · EEW警報を受信していません"
+                        } else {
+                            "EEWを受信していません"
+                        })
+                }
                 (_, Some(false)) => "地震情報に再接続中…",
-                _ if self.detail_error => "地震詳細を取得できませんでした",
+                _ if self.details.error.is_some() => "地震詳細を取得できませんでした",
                 _ => "地震情報を取得中…",
             };
             (
@@ -1001,7 +1086,7 @@ impl App {
         } else {
             banner
         };
-        (bulletin, banner)
+        Some((bulletin, banner))
     }
 
     fn paint(
@@ -1014,8 +1099,8 @@ impl App {
     ) -> Result<()> {
         let items = Tab::ALL.map(|tab| {
             let bulletin = match tab {
-                Tab::Eew => self.eew.as_ref(),
-                Tab::Demo if tab == self.tab => self.demo.get(self.selection[tab.index()]),
+                Tab::Eew => self.eew.active(),
+                Tab::Demo if tab == self.tab => self.demo.frames.get(self.selection[tab.index()]),
                 _ => None,
             };
             let (label, notice) = match (tab, bulletin.filter(|bulletin| bulletin.eew)) {
@@ -1057,38 +1142,60 @@ impl App {
             let (status, alert, lines) = self.tsunami_display();
             let frame = screen::panel(
                 &menu,
-                "津波情報",
-                status,
-                alert,
-                &lines,
+                screen::NoticePanel {
+                    title: "津波情報",
+                    status,
+                    alert,
+                    lines: &lines,
+                    controls: "R 更新  Q 終了",
+                },
                 display,
                 &mut self.scroll,
-                "R 更新  Q 終了",
             );
             return Ok(console.paint(&frame)?);
         }
         if self.page == Page::List && display.width() >= MIN_SPLIT_WIDTH {
             self.page = Page::Map;
         }
-        let (bulletin, banner) = self.current();
-        if self.tab == Tab::Eew && self.eew.is_none() {
+        let Some((bulletin, banner)) = self.current() else {
+            return Ok(());
+        };
+        if self.tab == Tab::Eew && self.eew.active().is_none() {
+            let details = self.connection_error.iter().cloned().collect::<Vec<_>>();
             let mut scroll = 0;
             let frame = screen::panel(
                 &menu,
-                "緊急地震速報",
-                &bulletin.label,
-                false,
-                &[],
+                screen::NoticePanel {
+                    title: "緊急地震速報",
+                    status: &bulletin.label,
+                    alert: false,
+                    lines: &details,
+                    controls: "Q 終了",
+                },
                 display,
                 &mut scroll,
-                "Q 終了",
             );
             return Ok(console.paint(&frame)?);
         }
-        let status = if self.connected == Some(false) {
+        let cached_history = self
+            .reports
+            .first()
+            .filter(|report| report.bulletin.provider != self.provider)
+            .map(|report| format!("前回の履歴 · {}", report.bulletin.provider.label()));
+        let status = if let Some(cached) = cached_history.as_deref() {
+            cached
+        } else if self.provider == Provider::P2p {
+            self.history_error
+                .as_deref()
+                .unwrap_or(if self.connected == Some(true) {
+                    "P2P地震情報（予備）"
+                } else {
+                    "P2P地震情報（予備）に接続中…"
+                })
+        } else if self.connected == Some(false) {
             "Wolfx 再接続中…"
-        } else if self.detail_error {
-            "詳細取得失敗  R 再取得"
+        } else if let Some(error) = &self.details.error {
+            error.as_str()
         } else {
             ""
         };
@@ -1125,7 +1232,7 @@ impl App {
         let mut viewing = Vec::new();
         let (group, navigation) = match self.tab {
             Tab::Demo => {
-                let playback = if self.demo_next.is_some() {
+                let playback = if self.demo.next.is_some() {
                     "停止"
                 } else {
                     "再生"
@@ -1176,7 +1283,7 @@ impl App {
             }
         }
         let series = if self.tab == Tab::Demo {
-            &self.demo
+            &self.demo.frames
         } else {
             &[] as &[Bulletin]
         };
@@ -1187,12 +1294,12 @@ impl App {
                 if self.connected == Some(false) {
                     "再接続中…"
                 } else {
-                    ""
+                    self.eew.notice().unwrap_or_default()
                 }
             } else {
                 &banner
             },
-            eew_source: live_eew.then_some("Wolfx"),
+            eew_source: live_eew.then_some(bulletin.provider.label()),
             series,
             view: self.view,
             layer: self.layer,
@@ -1218,44 +1325,74 @@ impl App {
         let Some(report) = self.reports.get(self.selection[Tab::Quake.index()]) else {
             return QuakeNotices::default();
         };
-        let received = self.received_eew_ids.contains(&report.id);
+        let received = self.eew.matches(&report.id);
         let eew = received.then_some(true).or(report.bulletin.eew_notice);
         let tsunami = self
             .tsunami
-            .as_ref()
-            .filter(|tsunami| tsunami.current(chrono::Utc::now()))
+            .verified(self.provider)
             .and_then(|tsunami| tsunami.notice_for(&report.id))
             .or(report.bulletin.tsunami_notice);
         QuakeNotices { eew, tsunami }
     }
 
     fn tsunami_display(&self) -> (&'static str, bool, Vec<String>) {
-        let failed = self.connected == Some(false);
-        let Some(tsunami) = &self.tsunami else {
-            return (
-                if failed {
-                    "津波情報に再接続中…"
-                } else {
-                    "津波情報を取得中…"
-                },
-                false,
-                Vec::new(),
-            );
-        };
         let mut lines = Vec::new();
-        let status = if self.tsunami_current {
-            if let Some(issued) = tsunami.issued {
-                lines.push(format!("気象庁 発表 {} JST", issued.format("%m/%d %H:%M")));
-            }
-            lines.extend(tsunami.areas.iter().cloned());
-            tsunami.title
-        } else {
-            "現在の津波の状況を確認できません"
-        };
-        if failed {
-            lines.insert(0, "Wolfx 再接続中…".into());
+        if self.provider == Provider::P2p {
+            lines.push("ライブ配信 · P2P地震情報（予備）".into());
         }
-        (status, self.tsunami_current && tsunami.alert, lines)
+        if let Some(error) = &self.connection_error {
+            lines.push(format!("接続を確認中 · {error}"));
+        }
+        if let Some(error) = &self.tsunami_error {
+            lines.push(format!("津波情報を読み取れません · {error}"));
+        }
+        if let Some(report) = self.tsunami.verified(self.provider) {
+            if let Some(issued) = report.issued {
+                lines.push(format!(
+                    "気象庁 発表 {} JST · Wolfx",
+                    issued.format("%m/%d %H:%M")
+                ));
+            }
+            if let Some(until) = report.valid_until {
+                lines.push(format!(
+                    "配信確認期限 {} JST",
+                    until.format("%m/%d %H:%M:%S")
+                ));
+            }
+            lines.extend(report.areas.iter().cloned());
+            return (report.title, report.alert, lines);
+        }
+        if self.provider == Provider::P2p {
+            if let Some(report) = &self.tsunami.reference {
+                if let Some(issued) = report.issued {
+                    lines.push(format!(
+                        "気象庁 発表 {} JST · P2P地震情報",
+                        issued.format("%m/%d %H:%M")
+                    ));
+                }
+                lines.push(report.title.into());
+                lines.extend(report.areas.iter().cloned());
+            }
+            return ("現在の津波状況は未確認", false, lines);
+        }
+        let status = match self.tsunami.validity {
+            Validity::AwaitingClock => "Wolfxの時刻を確認中…",
+            Validity::Expired => "配信確認期限を過ぎました · 現況未確認",
+            _ if self.tsunami.wolfx.is_none() => "津波情報を取得中…",
+            _ => "現在の津波状況は未確認",
+        };
+        if let Some(until) = self
+            .tsunami
+            .wolfx
+            .as_ref()
+            .and_then(|report| report.valid_until)
+        {
+            lines.push(format!(
+                "配信確認期限 {} JST · Wolfx",
+                until.format("%m/%d %H:%M:%S")
+            ));
+        }
+        (status, false, lines)
     }
 }
 

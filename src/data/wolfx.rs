@@ -342,14 +342,15 @@ pub(super) fn read_eew(packet: &Value) -> Result<Option<Bulletin>> {
 }
 
 pub(super) fn read_tsunami(packet: &Value) -> Result<Tsunami> {
-    let (title, alert) = match text(&packet["status"]) {
-        "active" => ("津波警報・注意報 発表中", true),
-        "forecast_only" => ("津波予報 発表中", false),
-        "cleared" => ("津波警報・注意報 解除", false),
-        "expired" => ("発表の有効期限切れ", false),
-        "none_reported" => ("津波なしの発表", false),
-        "unknown" => ("津波の状況は不明です", false),
-        "uninitialized" => ("津波情報をまだ受信していません", false),
+    use super::TsunamiStatus;
+
+    let status = match text(&packet["status"]) {
+        "active" => TsunamiStatus::Alert,
+        "forecast_only" => TsunamiStatus::Forecast,
+        "cleared" | "none_reported" => TsunamiStatus::Clear,
+        "expired" => TsunamiStatus::Expired,
+        "unknown" => TsunamiStatus::Unknown,
+        "uninitialized" => TsunamiStatus::Waiting,
         _ => return Err("Wolfx 津波情報の状態が不正です".into()),
     };
     let valid_until = (packet["trusted"].as_bool() == Some(true))
@@ -398,13 +399,12 @@ pub(super) fn read_tsunami(packet: &Value) -> Result<Tsunami> {
     };
     Ok(Tsunami {
         provider: Provider::Wolfx,
-        title,
+        status,
         event_notice,
         event_ids: entries(&packet["report"]["eventIds"])
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect(),
-        alert,
         valid_until,
         issued: parse_time(text(&packet["report"]["time"])),
         areas,

@@ -16,6 +16,12 @@ struct ActiveReport {
     expires: Instant,
 }
 
+struct ReceivedEvent {
+    id: String,
+    announced: bool,
+    warned: bool,
+}
+
 fn report_order(report: &Bulletin) -> (Option<Stamp>, Option<u64>, bool, bool) {
     (
         report.issued,
@@ -31,8 +37,10 @@ pub struct State {
     waiting: Option<Box<Bulletin>>,
     active: Option<ActiveReport>,
     last: Option<(Option<Stamp>, Option<u64>, bool, bool)>,
-    seen: VecDeque<String>,
-    notice: Option<String>,
+    seen: VecDeque<ReceivedEvent>,
+    notice: Option<(String, bool)>,
+    latest: Option<(Stamp, bool)>,
+    bell: bool,
 }
 
 impl State {
@@ -41,11 +49,43 @@ impl State {
     }
 
     pub fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+        self.notice.as_ref().map(|(message, _)| message.as_str())
+    }
+
+    pub fn latest(&self) -> Option<(Stamp, bool)> {
+        self.latest
+    }
+
+    pub fn can_confirm_idle(&self) -> bool {
+        self.clock.is_some() && self.notice.as_ref().is_none_or(|(_, uncertain)| !uncertain)
+    }
+
+    pub fn warning_seconds(&self, now: Instant) -> Option<u64> {
+        let report = self
+            .active
+            .as_ref()
+            .filter(|report| report.bulletin.warning && !report.bulletin.eew_cancelled)?;
+        Some(
+            ACTIVE_FOR
+                .to_std()
+                .ok()?
+                .saturating_sub(report.expires.saturating_duration_since(now))
+                .as_secs(),
+        )
+    }
+
+    fn remember(&mut self, issued: Stamp, expired: bool) {
+        if self.latest.is_none_or(|(previous, _)| previous <= issued) {
+            self.latest = Some((issued, expired));
+        }
     }
 
     pub fn matches(&self, id: &str) -> bool {
-        self.seen.iter().any(|event| event == id)
+        self.seen.iter().any(|event| event.id == id)
+    }
+
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.bell)
     }
 
     pub fn disconnect(&mut self) {
@@ -66,7 +106,7 @@ impl State {
     }
 
     pub fn invalid(&mut self, reason: &str) -> bool {
-        self.note(format!("EEWを読み取れません · {reason}"))
+        self.note(format!("EEWを読み取れません · {reason}"), true)
     }
 
     pub fn receive(&mut self, report: Box<Bulletin>, now: Instant) -> bool {
@@ -89,23 +129,27 @@ impl State {
                 report.provider.label()
             );
             self.waiting = Some(report);
-            return self.note(message);
+            return self.note(message, true);
         };
         let age = clock.at(now).signed_duration_since(issued);
         if age >= ACTIVE_FOR {
-            return self.note(format!(
-                "EEWを受信 · 発表から120秒以上経過（発表 {stamp} JST）"
-            ));
+            self.remember(issued, true);
+            return self.note(
+                format!("EEWを受信 · 発表から120秒以上経過（発表 {stamp} JST）"),
+                false,
+            );
         }
         if age < -FUTURE_TOLERANCE {
-            return self.note(format!(
-                "EEWを受信 · 発表時刻が配信元の時刻より先です（発表 {stamp} JST）"
-            ));
+            return self.note(
+                format!("EEWを受信 · 発表時刻が配信元の時刻より先です（発表 {stamp} JST）"),
+                true,
+            );
         }
         let remaining = (ACTIVE_FOR - age.max(chrono::TimeDelta::zero()))
             .to_std()
             .unwrap_or(Duration::ZERO);
         self.last = Some(order);
+        self.remember(issued, false);
         self.record_event(&report);
         self.active = Some(ActiveReport {
             bulletin: report,
@@ -116,14 +160,17 @@ impl State {
     }
 
     pub fn expire(&mut self, now: Instant) -> bool {
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|report| now >= report.expires)
+        if let Some(report) = &self.active
+            && now >= report.expires
         {
+            if let Some(issued) = report.bulletin.issued {
+                self.remember(issued, true);
+            }
             self.active = None;
-            if self.waiting.is_none() {
-                self.note("最後に受信したEEWは表示時間を過ぎました".into());
+            if self.waiting.is_none()
+                && self.notice.as_ref().is_none_or(|(_, uncertain)| !uncertain)
+            {
+                self.note("最後に受信したEEWは表示時間を過ぎました".into(), false);
             }
             true
         } else {
@@ -131,11 +178,12 @@ impl State {
         }
     }
 
-    fn note(&mut self, message: String) -> bool {
-        if self.notice.as_ref() == Some(&message) {
+    fn note(&mut self, message: String, uncertain: bool) -> bool {
+        let notice = (message, uncertain);
+        if self.notice.as_ref() == Some(&notice) {
             return false;
         }
-        self.notice = Some(message);
+        self.notice = Some(notice);
         true
     }
 
@@ -143,11 +191,22 @@ impl State {
         let Some(id) = &report.eew_event_id else {
             return;
         };
-        if !self.seen.contains(id) {
+        if let Some(event) = self.seen.iter_mut().find(|event| event.id == *id) {
+            if !report.eew_cancelled && (!event.announced || report.warning && !event.warned) {
+                self.bell = true;
+                event.announced = true;
+                event.warned |= report.warning;
+            }
+        } else {
             if self.seen.len() >= 256 {
                 self.seen.pop_front();
             }
-            self.seen.push_back(id.clone());
+            self.seen.push_back(ReceivedEvent {
+                id: id.clone(),
+                announced: !report.eew_cancelled,
+                warned: report.warning,
+            });
+            self.bell |= !report.eew_cancelled;
         }
     }
 }
@@ -181,8 +240,10 @@ mod tests {
         assert!(state.receive(report(clock, 20), received));
         assert!(state.active().is_none());
         assert!(state.notice().unwrap().contains("時刻を待っています"));
+        assert!(!state.take_bell());
         assert!(state.sync(clock, received));
         assert!(state.active().is_some());
+        assert!(state.take_bell());
         state.disconnect();
         assert!(!state.expire(received + Duration::from_secs(99)));
         assert!(state.expire(received + Duration::from_secs(100)));
@@ -200,6 +261,37 @@ mod tests {
             assert!(state.receive(report(clock, age), now));
             assert!(state.active().is_none());
             assert!(state.notice().unwrap().contains(reason));
+            assert!(!state.take_bell());
         }
+    }
+
+    #[test]
+    fn bells_are_deduplicated_with_one_more_on_warning_escalation() {
+        let now = Instant::now();
+        let clock = clock(now);
+        let mut state = State::default();
+        state.sync(clock, now);
+        let mut update = report(clock, 3);
+        assert!(state.receive(update.clone(), now));
+        assert!(state.take_bell());
+        assert!(!state.receive(update.clone(), now));
+        assert!(!state.take_bell());
+        update.eew_serial = Some(2);
+        update.warning = true;
+        assert!(state.receive(update.clone(), now));
+        assert_eq!(
+            state.warning_seconds(now + Duration::from_secs(7)),
+            Some(10)
+        );
+        assert!(state.take_bell());
+        update.eew_serial = Some(3);
+        assert!(state.receive(update.clone(), now));
+        assert!(!state.take_bell());
+        update.eew_serial = Some(4);
+        update.eew_cancelled = true;
+        update.warning = false;
+        assert!(state.receive(update, now));
+        assert!(!state.take_bell());
+        assert!(state.active().unwrap().eew_cancelled);
     }
 }

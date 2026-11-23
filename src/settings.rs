@@ -22,15 +22,9 @@ impl StationGrouping {
             Self::Intensity => "震度別",
         }
     }
-
-    pub fn other(self) -> Self {
-        match self {
-            Self::Prefecture => Self::Intensity,
-            Self::Intensity => Self::Prefecture,
-        }
-    }
 }
 
+pub const AUTO_HISTORY_ROWS: usize = 0;
 pub const DEFAULT_HISTORY_ROWS: usize = 10;
 pub const MAX_HISTORY_ROWS: usize = 50;
 
@@ -42,6 +36,7 @@ pub struct Settings {
     pub layer: Layer,
     pub station_grouping: StationGrouping,
     pub history_rows: usize,
+    pub eew_bell: bool,
 }
 
 impl Default for Settings {
@@ -52,6 +47,7 @@ impl Default for Settings {
             layer: Layer::default(),
             station_grouping: StationGrouping::default(),
             history_rows: DEFAULT_HISTORY_ROWS,
+            eew_bell: false,
         }
     }
 }
@@ -81,7 +77,7 @@ impl Settings {
             Ok(bytes) => {
                 let mut settings: Self =
                     serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-                settings.history_rows = settings.history_rows.clamp(1, MAX_HISTORY_ROWS);
+                settings.history_rows = settings.history_rows.min(MAX_HISTORY_ROWS);
                 Ok(settings)
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
@@ -101,5 +97,18 @@ impl Settings {
             let _ = fs::remove_file(temporary);
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_layer_uses_stations_and_saved_regions_are_preserved() {
+        let defaults: Settings = serde_json::from_str("{}").unwrap();
+        let saved: Settings = serde_json::from_str(r#"{"layer":"regions"}"#).unwrap();
+        assert_eq!(defaults.layer, Layer::Stations);
+        assert_eq!(saved.layer, Layer::Regions);
     }
 }

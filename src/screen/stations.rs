@@ -3,12 +3,15 @@ use std::collections::HashMap;
 use super::{panels::eew_badge, *};
 
 const MARK_NOTE: &str = "＊ 気象庁以外の観測点";
+const MARK_INK: Rgb = (148, 148, 148);
 
 pub(super) enum ReadingLine {
     Text(String, Rgb),
+    StationNames(String, Rgb),
     Intensity {
         label: String,
         count: usize,
+        unit: &'static str,
         background: Option<Rgb>,
     },
 }
@@ -23,14 +26,34 @@ impl ReadingLine {
     pub(super) fn render(&self, width: usize, ansi: bool) -> String {
         match self {
             Self::Text(text, ink) => color(&fit(text, width), *ink, ansi),
+            Self::StationNames(text, ink) => {
+                let visible = fit(text, width);
+                if !ansi {
+                    return visible;
+                }
+                let mut line = String::new();
+                for part in visible.split_inclusive(['＊', '*']) {
+                    if let Some(name) = part.strip_suffix(['＊', '*']) {
+                        let symbol = &part[name.len()..];
+                        if !name.is_empty() {
+                            line.push_str(&color(name, *ink, true));
+                        }
+                        line.push_str(&color(symbol, MARK_INK, true));
+                    } else {
+                        line.push_str(&color(part, *ink, true));
+                    }
+                }
+                line
+            }
             Self::Intensity {
                 label,
                 count,
+                unit,
                 background,
             } => {
                 let badge = fit(&format!(" {label} "), width.saturating_sub(1));
                 let count = fit(
-                    &format!("  {count}地点"),
+                    &format!("  {count}{unit}"),
                     width.saturating_sub(1 + badge.width()),
                 );
                 format!(
@@ -40,6 +63,26 @@ impl ReadingLine {
                 )
             }
         }
+    }
+}
+
+pub(super) fn intensity_heading(
+    label: &str,
+    level: &Level,
+    count: usize,
+    unit: &'static str,
+) -> ReadingLine {
+    let background = level.index().map(|_| reading_rgb(level));
+    let label = if background.is_some() {
+        format!("震度 {label}")
+    } else {
+        label.into()
+    };
+    ReadingLine::Intensity {
+        label,
+        count,
+        unit,
+        background,
     }
 }
 
@@ -138,7 +181,7 @@ pub(super) fn intensity_readings(
     start: usize,
     slots: usize,
 ) -> (usize, usize, Vec<ReadingLine>) {
-    let groups = station_groups(bulletin, StationGrouping::Intensity);
+    let groups = observation_groups(&bulletin.stations, StationGrouping::Intensity);
     let city_width = bulletin
         .stations
         .iter()
@@ -155,24 +198,10 @@ pub(super) fn intensity_readings(
     let groups: Vec<_> = groups
         .into_iter()
         .map(|(label, points)| {
-            let level = &points[0].level;
-            let background = level.index().map(|_| reading_rgb(level));
-            let label = if background.is_some() {
-                format!("震度 {label}")
-            } else {
-                label.into()
-            };
             let count = points.len();
+            let heading = intensity_heading(label, &points[0].level, count, "地点");
             let rows = pack(&points, city_width, names_width);
-            (
-                ReadingLine::Intensity {
-                    label,
-                    count,
-                    background,
-                },
-                count,
-                rows,
-            )
+            (heading, count, rows)
         })
         .collect();
     let total = bulletin.stations.len();
@@ -214,7 +243,7 @@ pub(super) fn intensity_readings(
             };
             let names = &row.names[skip..];
             let prefix = pad(city, city_width);
-            lines.push(ReadingLine::Text(
+            lines.push(ReadingLine::StationNames(
                 format!("  {prefix}{gap}{}", names.join("  ")),
                 INK,
             ));
@@ -224,7 +253,7 @@ pub(super) fn intensity_readings(
         }
     }
     if marked && shown != 0 {
-        lines.push(ReadingLine::Text(MARK_NOTE.into(), MUTED));
+        lines.push(ReadingLine::StationNames(MARK_NOTE.into(), MUTED));
     }
     (start, shown, lines)
 }

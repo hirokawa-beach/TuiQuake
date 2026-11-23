@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 452 120" role="img" aria-labelledby="title">
+  <title id="title">TuiQuake</title>
+  <rect width="452" height="120" rx="8" fill="#0d1218"/>
+  <g font-family="monospace" font-size="16" xml:space="preserve">
+    <text x="16" y="25" textLength="160" lengthAdjust="spacingAndGlyphs" fill="#99edf1">  ______      _ </text>
+    <text x="176" y="25" textLength="200" lengthAdjust="spacingAndGlyphs" fill="#ffebc2">____              __</text>
+    <text x="16" y="44" textLength="160" lengthAdjust="spacingAndGlyphs" fill="#74e0e7"> /_  __/_  __(_)</text>
+    <text x="176" y="44" textLength="250" lengthAdjust="spacingAndGlyphs" fill="#ffdb9c"> __ \__  ______ _/ /_____</text>
+    <text x="16" y="63" textLength="150" lengthAdjust="spacingAndGlyphs" fill="#57d2e0">  / / / / / / /</text>
+    <text x="166" y="63" textLength="270" lengthAdjust="spacingAndGlyphs" fill="#fbc77c"> / / / / / / __ `/ //_/ _ \</text>
+    <text x="16" y="82" textLength="140" lengthAdjust="spacingAndGlyphs" fill="#41b9cb"> / / / /_/ / /</text>
+    <text x="156" y="82" textLength="280" lengthAdjust="spacingAndGlyphs" fill="#f0b26a"> /_/ / /_/ / /_/ / ,&lt; /  __/</text>
+    <text x="16" y="101" textLength="130" lengthAdjust="spacingAndGlyphs" fill="#2f9bb2">/_/  \__,_/_/</text>
+    <text x="146" y="101" textLength="280" lengthAdjust="spacingAndGlyphs" fill="#d89b53">\___\_\__,_/\__,_/_/|_|\___/</text>
+  </g>
+</svg>

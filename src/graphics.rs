@@ -90,7 +90,7 @@ impl Map {
             Self::Image(Image::Sixel(_)) => "Sixel",
             Self::Image(Image::Kitty) => "Kitty",
             Self::Braille => "Unicode Braille  非推奨/表示調節中",
-            Self::Text => "文字地図",
+            Self::Text => "文字地図  非推奨",
         }
     }
 }

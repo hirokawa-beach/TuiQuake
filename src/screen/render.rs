@@ -82,6 +82,8 @@ impl Renderer {
             bulletin: b,
             banner,
             eew_source,
+            warning_seconds,
+            demo,
             series,
             view,
             layer,
@@ -135,7 +137,17 @@ impl Renderer {
         if menu.is_empty() && history.is_none() {
             header = event_header(b, &status, width, display.colors);
         } else if eew_panel {
-            header.extend(eew_banner(b, width, display.colors));
+            header.extend(eew_banner(b, width, display.colors, demo));
+            if b.warning
+                && !b.eew_cancelled
+                && let Some(seconds) = warning_seconds
+            {
+                header.extend(
+                    wrap(&format!("発表から {seconds}秒"), width)
+                        .into_iter()
+                        .map(|line| color(&line, INK, display.colors)),
+                );
+            }
             if !banner.is_empty() {
                 header.push(color(&fit(banner, width), MUTED, display.colors));
             }
@@ -192,7 +204,9 @@ impl Renderer {
         if !b.warning_areas.is_empty() {
             legend.push(('■', "警報対象", map::WARNING));
         }
-        if b.has_observations() && (display.colors || layer == Layer::Regions) {
+        if b.has_observations()
+            && (layer == Layer::Regions || (display.colors && display.map.image().is_some()))
+        {
             let (glyph, start) = if layer == Layer::Regions {
                 ('■', map::REGION)
             } else {

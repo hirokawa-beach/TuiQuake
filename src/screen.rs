@@ -8,7 +8,7 @@ use crate::{
     map::{self, Layer, PALETTE, Rgb, View},
 };
 
-use crate::settings::StationGrouping;
+use crate::settings::{AUTO_HISTORY_ROWS, StationGrouping};
 
 pub const MIN_SPLIT_WIDTH: usize = 58;
 pub const APP_NAME: &str = "TuiQuake";
@@ -16,6 +16,7 @@ const MAP_MAX_COLUMNS: usize = 44;
 const SIDEBAR_GAP: usize = 3;
 const INK: map::Rgb = (220, 239, 237);
 const MUTED: map::Rgb = (136, 173, 182);
+const MENU_KEY: Rgb = (111, 143, 151);
 const ACCENT: map::Rgb = (125, 213, 210);
 const ALERT: map::Rgb = (255, 175, 97);
 const FORECAST_INK: Rgb = (255, 222, 94);
@@ -85,6 +86,8 @@ pub struct Scene<'a> {
     pub bulletin: &'a Bulletin,
     pub banner: &'a str,
     pub eew_source: Option<&'a str>,
+    pub warning_seconds: Option<u64>,
+    pub demo: bool,
     pub series: &'a [Bulletin],
     pub view: View,
     pub layer: Layer,
@@ -102,6 +105,8 @@ impl<'a> Scene<'a> {
             bulletin,
             banner,
             eew_source: None,
+            warning_seconds: None,
+            demo: false,
             series: &[],
             view: View::new(national),
             layer: Layer::Stations,
@@ -233,13 +238,23 @@ fn styled_width(line: &str) -> usize {
             .sum::<usize>()
 }
 
+const SHALLOW_DEPTH: &str = "ごく浅い";
+
+fn depth_label(km: u32) -> String {
+    if km == 0 {
+        SHALLOW_DEPTH.into()
+    } else {
+        format!("{km} km")
+    }
+}
+
 fn magnitude_and_depth(bulletin: &Bulletin) -> String {
     let mut facts = Vec::new();
     if !bulletin.magnitude.is_empty() {
         facts.push(format!("M{}", bulletin.magnitude));
     }
     if let Some(depth) = bulletin.depth {
-        facts.push(format!("深さ {depth} km"));
+        facts.push(format!("深さ {}", depth_label(depth)));
     }
     facts.join("  ·  ")
 }
@@ -355,7 +370,7 @@ fn event_facts(b: &Bulletin, width: usize, ansi: bool) -> Vec<String> {
 
 fn observation_label(layer: Layer) -> &'static str {
     match layer {
-        Layer::Regions => "広域・最大観測震度",
+        Layer::Regions => "地域別・最大観測震度",
         Layer::Stations => "各観測点の震度",
     }
 }
@@ -380,11 +395,14 @@ fn reading_row(item: &Observation) -> (String, Rgb) {
     )
 }
 
-fn station_groups(b: &Bulletin, grouping: StationGrouping) -> Vec<(&str, Vec<&Observation>)> {
+fn observation_groups(
+    observations: &[Observation],
+    grouping: StationGrouping,
+) -> Vec<(&str, Vec<&Observation>)> {
     const UNKNOWN: &str = "都道府県不明";
     let mut groups: Vec<(&str, Vec<&Observation>)> = Vec::new();
     // Observation order is already strongest first, including within groups.
-    for station in &b.stations {
+    for station in observations {
         let label = match grouping {
             StationGrouping::Prefecture => station.prefecture.as_deref().unwrap_or(UNKNOWN),
             StationGrouping::Intensity => short_intensity_label(&station.level),
@@ -412,23 +430,23 @@ fn readings(
     width: usize,
 ) -> Vec<ReadingLine> {
     match (layer, grouping) {
-        (Layer::Regions, _) => b
-            .regions
-            .iter()
-            .map(reading_row)
-            .map(ReadingLine::from)
-            .collect(),
+        (Layer::Regions, _) => regional_window(b, 0, usize::MAX).2,
         (Layer::Stations, StationGrouping::Intensity) => {
             intensity_readings(b, width, 0, usize::MAX).2
         }
-        (Layer::Stations, StationGrouping::Prefecture) => station_groups(b, grouping)
+        (Layer::Stations, StationGrouping::Prefecture) => observation_groups(&b.stations, grouping)
             .into_iter()
             .flat_map(|(label, stations)| {
                 std::iter::once(prefecture_heading(label))
-                    .chain(stations.into_iter().map(reading_row).map(ReadingLine::from))
+                    .chain(stations.into_iter().map(prefecture_station_row))
             })
             .collect(),
     }
+}
+
+fn prefecture_station_row(station: &Observation) -> ReadingLine {
+    let (line, ink) = reading_row(station);
+    ReadingLine::StationNames(line, ink)
 }
 
 fn station_readings_window(
@@ -457,8 +475,37 @@ fn station_readings_window(
 }
 
 fn prefecture_window(b: &Bulletin, start: usize, slots: usize) -> (usize, usize, Vec<ReadingLine>) {
-    let count = b.stations.len();
-    let groups = station_groups(b, StationGrouping::Prefecture);
+    grouped_window(
+        &b.stations,
+        StationGrouping::Prefecture,
+        start,
+        slots,
+        |label, _| prefecture_heading(label),
+        prefecture_station_row,
+    )
+}
+
+fn regional_window(b: &Bulletin, start: usize, slots: usize) -> (usize, usize, Vec<ReadingLine>) {
+    grouped_window(
+        &b.regions,
+        StationGrouping::Intensity,
+        start,
+        slots,
+        |label, regions| intensity_heading(label, &regions[0].level, regions.len(), "地域"),
+        |region| ReadingLine::Text(format!("  {}", region.name), INK),
+    )
+}
+
+fn grouped_window(
+    observations: &[Observation],
+    grouping: StationGrouping,
+    start: usize,
+    slots: usize,
+    heading: impl Fn(&str, &[&Observation]) -> ReadingLine,
+    row: impl Fn(&Observation) -> ReadingLine,
+) -> (usize, usize, Vec<ReadingLine>) {
+    let count = observations.len();
+    let groups = observation_groups(observations, grouping);
     let start = if count + groups.len() <= slots {
         0
     } else {
@@ -475,10 +522,10 @@ fn prefecture_window(b: &Bulletin, start: usize, slots: usize) -> (usize, usize,
         if slots - rows.len() < 2 {
             break;
         }
-        rows.push(prefecture_heading(label));
+        rows.push(heading(label, &stations));
         let visible = stations.into_iter().skip(skip).take(slots - rows.len());
         shown += visible.len();
-        rows.extend(visible.map(reading_row).map(ReadingLine::from));
+        rows.extend(visible.map(&row));
         skip = 0;
     }
     (start, shown, rows)
@@ -504,12 +551,16 @@ impl History<'_> {
         }
     }
 
-    fn target_height(&self) -> usize {
-        self.row_limit + 2
+    fn target_height(&self, available: usize) -> usize {
+        if self.row_limit == AUTO_HISTORY_ROWS {
+            available
+        } else {
+            self.row_limit.saturating_add(2).min(available)
+        }
     }
 
     fn section(self, width: usize, height: usize, ansi: bool) -> Vec<String> {
-        let height = height.min(self.target_height());
+        let height = self.target_height(height);
         let mut title = self.title();
         if height <= 2 && !self.reports.is_empty() && !self.status.is_empty() {
             write!(title, " · {}", self.status).unwrap();
@@ -544,10 +595,10 @@ fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) ->
         return out;
     }
     const MAG_WIDTH: usize = 5;
-    const DEPTH_WIDTH: usize = 7;
+    const DEPTH_WIDTH: usize = 9;
     let date_width = if width >= 36 { 11 } else { 5 };
     let show_mag = width >= 40;
-    let show_depth = width >= 26;
+    let show_depth = width >= 28;
     let header = format!(
         "{}{} 震度 {}{}震源地",
         if ansi { "" } else { "  " },
@@ -573,33 +624,52 @@ fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) ->
     if rows > out.len() + 1 {
         out.push(color(&fit(&header, width), MUTED, ansi));
     }
-    let count = rows.saturating_sub(out.len()).min(row_limit);
+    let available = rows.saturating_sub(out.len());
+    let count = if row_limit == AUTO_HISTORY_ROWS {
+        available
+    } else {
+        available.min(row_limit)
+    };
     let start = selected
         .saturating_sub(count / 2)
         .min(reports.len().saturating_sub(count));
+    let mut previous_day = None;
     for (index, report) in reports.iter().enumerate().skip(start).take(count) {
         let item = &report.bulletin;
         let date = item
             .origin
-            .map(|t| {
-                t.format(if date_width == 11 {
-                    "%m/%d %H:%M"
-                } else {
+            .map(|stamp| {
+                let day = stamp.date_naive();
+                let format = if date_width == 5 {
                     "%H:%M"
-                })
-                .to_string()
+                } else if previous_day == Some(day) {
+                    "      %H:%M"
+                } else {
+                    "%m/%d %H:%M"
+                };
+                previous_day = Some(day);
+                stamp.format(format).to_string()
             })
             .unwrap_or_default();
         let magnitude = if show_mag {
-            format!("{} ", pad(&item.magnitude, MAG_WIDTH - 1))
+            format!(
+                "{:>digits$} ",
+                fit(&item.magnitude, MAG_WIDTH - 1),
+                digits = MAG_WIDTH - 1
+            )
         } else {
             String::new()
         };
         let depth = if show_depth {
-            let label = item
-                .depth
-                .map_or_else(|| "—".into(), |km| format!("{km}km"));
-            pad(&label, DEPTH_WIDTH)
+            let value = match item.depth {
+                Some(0) => SHALLOW_DEPTH.into(),
+                Some(km) => format!("{km}km"),
+                None => "—".into(),
+            };
+            format!(
+                "{}{value} ",
+                " ".repeat(DEPTH_WIDTH.saturating_sub(value.width() + 1))
+            )
         } else {
             String::new()
         };
@@ -640,9 +710,14 @@ fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) ->
             .and_then(|level| level.index())
             .filter(|_| cell_width > 0)
         {
-            let background = PALETTE[(map::STATION + index) as usize];
-            map::rgb(&mut line, background, true);
-            map::rgb(&mut line, badge_ink(background), false);
+            let intensity_color = PALETTE[(map::STATION + index) as usize];
+            let foreground = if index >= 2 {
+                map::rgb(&mut line, intensity_color, true);
+                badge_ink(intensity_color)
+            } else {
+                intensity_color
+            };
+            map::rgb(&mut line, foreground, false);
             line.push_str(&fit(&cell, cell_width));
             line.push_str(RESET);
             if selected {
@@ -715,7 +790,7 @@ fn control_lines(heading: &str, bindings: &[(&str, &str)], display: Display) -> 
     lines
 }
 
-pub const QUAKE_KEYS: [&str; 2] = ["↑↓ 選択", "Enter 地図"];
+pub const QUAKE_KEYS: [&str; 2] = ["↑↓ 選択", "B 地図へ"];
 
 pub fn footer(actions: &[&str], display: Display) -> String {
     let width = display.width();
@@ -757,7 +832,7 @@ pub struct NoticePanel<'a> {
     pub status: &'a str,
     pub alert: bool,
     pub lines: &'a [String],
-    pub actions: &'a [&'a str],
+    pub notes: &'a [String],
 }
 
 pub fn panel(
@@ -771,7 +846,7 @@ pub fn panel(
         status,
         alert,
         lines,
-        actions,
+        notes,
     } = notice;
     let width = display.width();
     let inner = width - TEXT_FRAME_MARGIN;
@@ -780,7 +855,16 @@ pub fn panel(
         .into_iter()
         .map(|line| color(&line, if alert { ALERT } else { INK }, display.colors))
         .collect();
-    let rows: Vec<_> = lines.iter().flat_map(|line| wrap(line, inner)).collect();
+    let rows: Vec<_> = lines
+        .iter()
+        .flat_map(|line| wrap(line, inner))
+        .chain(
+            notes
+                .iter()
+                .flat_map(|line| wrap(line, inner))
+                .map(|line| color(&line, MUTED, display.colors)),
+        )
+        .collect();
     let capacity = display.rows.saturating_sub(menu.len() + content.len() + 3);
     *scroll = (*scroll).min(rows.len().saturating_sub(capacity));
     content.extend(rows.iter().skip(*scroll).take(capacity).cloned());
@@ -796,6 +880,11 @@ pub fn panel(
         title.to_owned()
     };
     text.extend(Border::notice(width, display.colors, alert).text(content, &title, height));
+    let actions: &[&str] = if capacity > 0 && rows.len() > capacity {
+        &["↑↓ スクロール"]
+    } else {
+        &[]
+    };
     text.push(footer(actions, display));
     Frame {
         text: text.join("\n"),
@@ -803,81 +892,179 @@ pub fn panel(
     }
 }
 
+pub struct SettingChoice {
+    pub label: std::borrow::Cow<'static, str>,
+    pub selected: bool,
+    pub supported: bool,
+}
+
+pub struct SettingRow {
+    pub label: &'static str,
+    pub description: &'static str,
+    pub hint: Option<&'static str>,
+    pub choices: Vec<SettingChoice>,
+}
+
 pub fn settings(
     menu: &[String],
-    entries: &[(&str, &str)],
+    entries: &[SettingRow],
     selected: usize,
-    dirty: bool,
-    active_map: Option<&str>,
+    active_map: &str,
     notice: Option<(&str, bool)>,
     display: Display,
 ) -> Frame {
-    let width = display.width().min(64);
+    let width = display.width().min(88);
     let inner = width - TEXT_FRAME_MARGIN;
-    let on_save = selected == entries.len();
-    let value_key = if on_save {
-        "Enter 保存"
-    } else {
-        "←→ 変更"
-    };
     let capacity = display.rows.saturating_sub(menu.len() + 3);
-    let row_count = capacity.min(entries.len() + 1);
-    let start = (selected + 1).saturating_sub(row_count);
-    let mut rows = Vec::new();
-    for index in (start..entries.len() + 1).take(row_count) {
+    let label_width = entries
+        .iter()
+        .map(|entry| entry.label.width())
+        .max()
+        .unwrap_or_default();
+    let mut content = Vec::new();
+    let mut selected_end = 0;
+    for (index, entry) in entries.iter().enumerate() {
         let active = index == selected;
-        let marker = if active { '▸' } else { ' ' };
-        let line = if let Some((label, value)) = entries.get(index) {
-            let label_width = if inner >= 38 { 18 } else { label.width() };
-            let value = if active {
-                format!("‹ {value} ›")
-            } else {
-                format!("  {value}")
-            };
-            format!("{marker} {}  {value}", pad(label, label_width))
-        } else {
-            format!("{marker} [ 保存して適用 ]")
-        };
-        let line = fit(&line, inner);
-        if active && display.colors {
-            let mut styled = String::new();
-            map::rgb(&mut styled, SELECTED, true);
-            styled.push_str(&color(&pad(&line, inner), INK, true));
-            rows.push(styled);
-        } else {
-            let rgb = if index == entries.len() { ACCENT } else { INK };
-            rows.push(color(&line, rgb, display.colors));
+        content.extend(setting_lines(
+            entry,
+            active,
+            label_width,
+            inner,
+            display.colors,
+        ));
+        if index == 0 {
+            content.push(color(
+                &fit(&format!("  使用中  {active_map}"), inner),
+                MUTED,
+                display.colors,
+            ));
+        }
+        if active {
+            selected_end = content.len();
         }
     }
-    if let Some((message, alert)) = notice {
-        rows.extend(
-            wrap(message, inner)
-                .into_iter()
-                .take(capacity.saturating_sub(rows.len()))
-                .map(|line| color(&line, if alert { ALERT } else { ACCENT }, display.colors)),
-        );
-    } else if let Some(active_map) = active_map
-        && rows.len() < capacity
-    {
-        rows.push(color(
-            &fit(&format!("使用中の描画方式  {active_map}"), inner),
-            MUTED,
+    let mut details = Vec::new();
+    if let Some((message, error)) = notice {
+        details.push(color(
+            &fit(message, inner),
+            if error { ALERT } else { ACCENT },
             display.colors,
         ));
     }
-    let title = if dirty {
-        "設定 · 未保存"
-    } else {
-        "設定"
-    };
-    let height = rows.len() + 2;
+    if let Some(entry) = entries.get(selected) {
+        details.extend(
+            wrap(entry.description, inner)
+                .into_iter()
+                .take(2)
+                .map(|line| color(&line, MUTED, display.colors)),
+        );
+    }
+    details.truncate(capacity.saturating_sub(1));
+    let rows = capacity.saturating_sub(details.len());
+    let start = selected_end.saturating_sub(rows);
+    let mut visible: Vec<_> = content.into_iter().skip(start).take(rows).collect();
+    visible.extend(details);
+    let height = visible.len() + 2;
     let mut text = menu.to_vec();
-    text.extend(Border::new(width, display.colors).text(rows, title, height));
-    text.push(footer(&["↑↓ 選択", value_key], display));
+    text.extend(Border::new(width, display.colors).text(visible, "設定", height));
+    let action = if entries
+        .get(selected)
+        .is_some_and(|row| row.choices.is_empty())
+    {
+        "Enter 開く"
+    } else {
+        "←→/Space 変更"
+    };
+    text.push(footer(&["↑↓ 選択", action, "Esc 戻る"], display));
     Frame {
         text: text.join("\n"),
         ..Frame::default()
     }
+}
+
+fn setting_lines(
+    entry: &SettingRow,
+    active: bool,
+    label_width: usize,
+    width: usize,
+    colors: bool,
+) -> Vec<String> {
+    let marker = if active { '▸' } else { ' ' };
+    if entry.choices.is_empty() {
+        let label = format!("{marker} {}", pad(entry.label, label_width));
+        let mut row = color(&fit(&label, width), INK, colors);
+        if let Some(hint) = entry
+            .hint
+            .filter(|hint| label.width() + 2 + hint.width() <= width)
+        {
+            row.push_str("  ");
+            row.push_str(&color(hint, ACCENT, colors));
+        }
+        return vec![row];
+    }
+    let mut rows = Vec::new();
+    let indent = if width >= 56 {
+        label_width + 4
+    } else {
+        rows.push(color(
+            &fit(&format!("{marker} {}", entry.label), width),
+            INK,
+            colors,
+        ));
+        2
+    };
+    let mut line = if indent == 2 {
+        " ".repeat(indent)
+    } else {
+        color(
+            &format!("{marker} {}  ", pad(entry.label, label_width)),
+            INK,
+            colors,
+        )
+    };
+    let mut used = indent;
+    for choice in &entry.choices {
+        let available = width.saturating_sub(indent);
+        let label = if choice.supported {
+            fit(
+                &choice.label,
+                available.saturating_sub(usize::from(choice.selected) * 2),
+            )
+        } else {
+            let name = fit(
+                &choice.label,
+                available.saturating_sub(2 + usize::from(choice.selected) * 2),
+            );
+            format!("{name} ×")
+        };
+        let label = if choice.selected {
+            format!("[{label}]")
+        } else {
+            label
+        };
+        let option_width = label.width();
+        if used > indent && used + 3 + option_width > width {
+            rows.push(std::mem::take(&mut line));
+            line.push_str(&" ".repeat(indent));
+            used = indent;
+        }
+        if used > indent {
+            line.push_str(&color(" │ ", FRAME, colors));
+            used += 3;
+        }
+        if choice.selected && colors {
+            map::rgb(&mut line, SELECTED, true);
+        }
+        let ink = if choice.supported { INK } else { MUTED };
+        line.push_str(&color(&label, ink, colors));
+        used += option_width;
+    }
+    if let Some(hint) = entry.hint.filter(|hint| used + 3 + hint.width() <= width) {
+        line.push_str("   ");
+        line.push_str(&color(hint, MUTED, colors));
+    }
+    rows.push(line);
+    rows
 }
 
 fn wrap(value: &str, width: usize) -> Vec<String> {
@@ -908,19 +1095,99 @@ pub struct MenuItem<'a> {
 pub fn menu_lines(items: &[MenuItem<'_>], display: Display) -> Vec<String> {
     let width = display.width();
     let mut rows = Vec::new();
-    let mut line = color(APP_NAME, INK, display.colors);
-    let mut used = APP_NAME.width();
+    let mut line = format!(" {}", compact_logo(display.colors));
+    let mut used = 1 + APP_NAME.width();
     for item in items {
-        let marked = item.active && !display.colors;
-        let mut label = fit(
-            &format!("{} {}", item.key, item.label),
-            width - if marked { 2 } else { 0 },
+        let key = format!("{} ", item.key);
+        let dot = if item.notice.is_some() { "● " } else { "" };
+        let label = fit(
+            item.label,
+            width.saturating_sub(key.width() + dot.width() + 2),
         );
-        if marked {
-            label = format!("[{label}]");
+        let tab_width = key.width() + dot.width() + label.width() + 2;
+        if used > 0 && used + 1 + tab_width > width {
+            rows.push(std::mem::take(&mut line));
+            used = 0;
         }
-        let item_width = label.width();
-        if used + 2 + item_width > width {
+        if used > 0 {
+            line.push(' ');
+            used += 1;
+        }
+        if display.colors {
+            if item.active {
+                map::rgb(&mut line, SELECTED, true);
+            }
+            line.push(' ');
+            map::rgb(&mut line, MENU_KEY, false);
+            line.push_str(&key);
+            let ink = match item.notice {
+                Some(MenuNotice::Forecast) => FORECAST_INK,
+                Some(MenuNotice::Warning) => WARNING_INK,
+                None if item.active => INK,
+                None => MUTED,
+            };
+            map::rgb(&mut line, ink, false);
+            write!(line, "{dot}{label} {RESET}").unwrap();
+        } else if item.active {
+            write!(line, "[{key}{dot}{label}]").unwrap();
+        } else {
+            write!(line, " {key}{dot}{label} ").unwrap();
+        }
+        used += tab_width;
+    }
+    rows.push(line);
+    rows
+}
+
+pub struct FeedStatus {
+    pub connection: &'static str,
+    pub online: bool,
+    pub updated: Option<crate::data::Stamp>,
+    pub eew: (&'static str, Option<MenuNotice>),
+    pub tsunami: (&'static str, Option<MenuNotice>),
+}
+
+pub fn append_feed_status(rows: &mut Vec<String>, status: FeedStatus, display: Display) {
+    let updated = status
+        .updated
+        .map(|stamp| format!("{} 更新", stamp.format("%H:%M")));
+    let tone = |notice| match notice {
+        Some(MenuNotice::Warning) => WARNING_INK,
+        Some(MenuNotice::Forecast) => FORECAST_INK,
+        None => MUTED,
+    };
+    let fields = [
+        (
+            status.connection,
+            if status.online {
+                (142, 211, 176)
+            } else {
+                MUTED
+            },
+        ),
+        (updated.as_deref().unwrap_or_default(), MUTED),
+        (status.eew.0, tone(status.eew.1)),
+        (status.tsunami.0, tone(status.tsunami.1)),
+    ];
+    let width = display.width();
+    let total = fields
+        .iter()
+        .map(|(label, _)| label.width() + 2)
+        .sum::<usize>()
+        - if updated.is_some() { 2 } else { 4 };
+    let mut line = String::new();
+    let mut used = 0;
+    if let Some(last) = rows.last_mut()
+        && styled_width(last) + 3 + total <= width
+    {
+        line = std::mem::take(last);
+        rows.pop();
+        used = width - total - 2;
+        line.push_str(&" ".repeat(used - styled_width(&line)));
+    }
+    for (label, ink) in fields.into_iter().filter(|(label, _)| !label.is_empty()) {
+        let label = fit(label, width);
+        if used > 0 && used + 2 + label.width() > width {
             rows.push(std::mem::take(&mut line));
             used = 0;
         }
@@ -928,20 +1195,11 @@ pub fn menu_lines(items: &[MenuItem<'_>], display: Display) -> Vec<String> {
             line.push_str("  ");
             used += 2;
         }
-        let ink = match item.notice {
-            Some(MenuNotice::Forecast) => FORECAST_INK,
-            Some(MenuNotice::Warning) => WARNING_INK,
-            None if item.active => INK,
-            None => MUTED,
-        };
-        if item.active && display.colors {
-            map::rgb(&mut line, SELECTED, true);
-        }
+        used += label.width();
         line.push_str(&color(&label, ink, display.colors));
-        used += item_width;
     }
     rows.push(line);
-    rows
+    rows.push(color(&"─".repeat(width), FRAME, display.colors));
 }
 
 fn color_logo(text: &str, split: usize, cyan: Rgb, amber: Rgb, ansi: bool) -> String {
@@ -1089,93 +1347,7 @@ pub fn map_picker(options: &[Map], selected: usize, display: Display) -> Frame {
     }
 }
 
-pub fn about(menu: &[String], display: Display, scroll: &mut usize) -> Frame {
-    let width = display.width();
-    let inner = width - TEXT_FRAME_MARGIN;
-    let capacity = display.rows.saturating_sub(menu.len() + 3);
-    let version = concat!("v", env!("CARGO_PKG_VERSION"));
-    let logo_width = LOGO.iter().map(|row| row.len()).max().unwrap_or(0);
-    let mut content = Vec::new();
-    if inner >= logo_width && capacity >= LOGO.len() + 5 {
-        content.extend(logo_lines(display.colors));
-        content.push(color(
-            &format!("{version:>logo_width$}"),
-            MUTED,
-            display.colors,
-        ));
-        content.push(String::new());
-    } else {
-        content.push(compact_logo(display.colors));
-        content.extend(
-            wrap(version, inner)
-                .into_iter()
-                .map(|line| color(&line, MUTED, display.colors)),
-        );
-    }
-    let renderer = format!("使用中の描画方式  {}", display.map.label());
-    let sections: &[(&str, &[&str])] = &[
-        (
-            "地震・速報を見る",
-            &[
-                "地震  履歴を選ぶと、震源と各地の観測震度を地図に表示します。",
-                "EEW   緊急地震速報をライブ受信します。予報は黄色、警報は赤です。",
-                "津波  警報・注意報・予報の対象地域や第1波の見込みを確認できます。",
-                "デモ  架空の速報で、予報・警報や震度の表示を試せます。",
-            ],
-        ),
-        (
-            "地図の描画",
-            &[
-                &renderer,
-                "Sixel / Kitty は画像で、Unicode Braille と文字地図は文字で描きます。",
-            ],
-        ),
-        (
-            "データとクレジット",
-            &[
-                "通常配信  Wolfx Project",
-                "予備配信  P2P地震情報",
-                "気象庁  震度観測点一覧・地震情報／細分区域GISをTuiQuakeが加工",
-                "地図の加工内容と元データの承認番号は README.md に記載しています。",
-                "国土交通省  国土数値情報（湖沼データ）をTuiQuakeが加工",
-                "Natural Earth 1:50m Land  東アジアの周辺陸地",
-                "FIGlet Slant / Glenn Chappell  ASCIIロゴの書体",
-            ],
-        ),
-    ];
-
-    for &(heading, details) in sections {
-        if !content.last().is_some_and(String::is_empty) {
-            content.push(String::new());
-        }
-        content.push(color(&fit(heading, inner), ACCENT, display.colors));
-        content.extend(
-            details
-                .iter()
-                .flat_map(|detail| wrap(detail, inner))
-                .map(|line| color(&line, INK, display.colors)),
-        );
-    }
-
-    let total = content.len();
-    *scroll = (*scroll).min(total.saturating_sub(capacity));
-    let end = (*scroll + capacity).min(total);
-    let title = if capacity > 0 && total > capacity {
-        format!("About  {}–{end}/{total}", *scroll + 1)
-    } else {
-        "About".into()
-    };
-    let visible = content.into_iter().skip(*scroll).take(capacity).collect();
-    let height = end - *scroll + 2;
-    let mut rows = menu.to_vec();
-    rows.extend(Border::new(width, display.colors).text(visible, &title, height));
-    rows.push(footer(&["↑↓ スクロール"], display));
-    Frame {
-        text: rows.join("\n"),
-        ..Frame::default()
-    }
-}
-
+mod about;
 mod help;
 mod panels;
 mod raster;
@@ -1184,7 +1356,8 @@ mod stations;
 #[cfg(test)]
 mod tests;
 
+pub use about::{AboutInfo, about};
 pub use help::{HelpOverlay, HelpTopic, help};
 pub use panels::detail;
 pub use render::Renderer;
-use stations::{ReadingLine, intensity_readings};
+use stations::{ReadingLine, intensity_heading, intensity_readings};

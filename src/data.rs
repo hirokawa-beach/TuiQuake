@@ -261,18 +261,32 @@ pub fn merge_reports(list: &Arc<[Report]>, details: &Arc<[Report]>) -> Arc<[Repo
     joined.into()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TsunamiStatus {
+    Alert,
+    Forecast,
+    Clear,
+    Expired,
+    Unknown,
+    Waiting,
+    Reference { cancelled: bool },
+}
+
 pub struct Tsunami {
     pub provider: Provider,
-    pub title: &'static str,
+    pub status: TsunamiStatus,
     event_ids: Vec<String>,
     event_notice: Option<&'static str>,
-    pub alert: bool,
     pub valid_until: Option<Stamp>,
     pub issued: Option<Stamp>,
     pub areas: Vec<String>,
 }
 
 impl Tsunami {
+    pub fn alert(&self) -> bool {
+        self.status == TsunamiStatus::Alert
+    }
+
     pub fn notice_for(&self, id: &str) -> Option<&'static str> {
         self.event_notice
             .filter(|_| self.event_ids.iter().any(|event| event == id))
@@ -391,6 +405,14 @@ impl Client {
             _ => p2p::last_eew(self),
         }
     }
+}
+
+pub fn demo_bell(previous: Option<&Bulletin>, current: &Bulletin) -> bool {
+    current.eew
+        && !current.eew_cancelled
+        && previous.is_none_or(|report| {
+            !report.eew || report.eew_cancelled || current.warning && !report.warning
+        })
 }
 
 pub fn set_demo_intensity(report: &mut Bulletin, maximum: u8) {
@@ -549,6 +571,7 @@ mod tests {
         assert_eq!(history.len(), 1);
         let bulletin = &history[0].bulletin;
         assert_eq!(bulletin.name, "トカラ列島近海");
+        assert_eq!(bulletin.depth, Some(0));
         assert_eq!(
             bulletin.stations[0].municipality.as_deref(),
             Some("鹿児島十島村")
@@ -668,7 +691,7 @@ mod tests {
         );
         let tsunami = json!({"type":"jma_tsunami","status":"unknown"});
         assert!(
-            matches!(live_update(&tsunami, None), Some(LiveUpdate::Tsunami(report)) if !report.alert)
+            matches!(live_update(&tsunami, None), Some(LiveUpdate::Tsunami(report)) if !report.alert())
         );
     }
 
@@ -719,7 +742,7 @@ mod tests {
             start,
         );
         tsunami.update(start + Duration::from_secs(59));
-        assert!(tsunami.verified(Provider::Wolfx).unwrap().alert);
+        assert!(tsunami.verified(Provider::Wolfx).unwrap().alert());
         let reference = p2p_tsunami_reference();
         tsunami.receive(reference, start + Duration::from_secs(59));
         assert!(tsunami.verified(Provider::P2p).is_none());
@@ -737,11 +760,38 @@ mod tests {
         assert!(tsunami.verified(Provider::Wolfx).is_none());
     }
 
+    #[test]
+    fn a_provider_expiry_never_counts_as_confirmed_tsunami_clearance() {
+        let now = Instant::now();
+        let utc = parse_time("2026-11-22T10:20:00Z").unwrap().to_utc();
+        let mut tsunami = crate::tsunami::State::default();
+        tsunami.sync_wolfx(ServerClock { utc, received: now }, now);
+        let mut packet = json!({
+            "status": "expired",
+            "trusted": true,
+            "validUntil": "2026-11-22T10:21:00Z",
+            "report": {"time": "2026-11-22T10:19:00Z"}
+        });
+        tsunami.receive(read_tsunami(&packet).unwrap(), now);
+        tsunami.update(now);
+        assert!(tsunami.verified(Provider::Wolfx).is_none());
+        packet["status"] = "cleared".into();
+        tsunami.receive(read_tsunami(&packet).unwrap(), now);
+        tsunami.update(now);
+        assert!(
+            tsunami
+                .verified(Provider::Wolfx)
+                .is_some_and(|report| report.status == TsunamiStatus::Clear)
+        );
+        tsunami.update(now + Duration::from_secs(60));
+        assert!(tsunami.verified(Provider::Wolfx).is_none());
+        assert!(tsunami.last_issued.is_some());
+    }
+
     fn p2p_tsunami_reference() -> Tsunami {
         Tsunami {
             provider: Provider::P2p,
-            title: "津波の発表内容",
-            alert: false,
+            status: TsunamiStatus::Reference { cancelled: false },
             valid_until: None,
             issued: parse_time("2026-11-22T10:20:30Z"),
             areas: Vec::new(),
@@ -765,7 +815,7 @@ mod tests {
             }]
         });
         let report = read_tsunami(&packet).unwrap();
-        assert!(report.alert);
+        assert!(report.alert());
         assert!(report.current(parse_time("2026-11-18T00:04:59Z").unwrap().to_utc()));
         assert!(!report.current(parse_time("2026-11-18T00:05:00Z").unwrap().to_utc()));
         assert_eq!(

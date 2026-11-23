@@ -2,7 +2,6 @@ use std::{
     borrow::Cow,
     fmt::Write as _,
     io::{self, IsTerminal, Write},
-    path::PathBuf,
     sync::{
         Arc,
         mpsc::{self, Receiver, Sender},
@@ -19,18 +18,22 @@ use crossterm::{
 use crate::{
     data::{
         self, Bulletin, Client, INTENSITIES, Level, LiveQuery, LiveUpdate, Provider, Report,
-        Result, Source,
+        Result, ServerClock, Source, TsunamiStatus,
     },
     eew,
     graphics::{self, Capabilities, Image, KITTY_COMMAND, Map, MapMode},
     map::{self, Layer, View},
     screen::{
-        self, APP_NAME, Display, Frame, HelpOverlay, HelpTopic, History, MIN_SPLIT_WIDTH,
-        MenuNotice, QuakeNotices, Renderer, Scene,
+        self, APP_NAME, AboutInfo, Display, FeedStatus, Frame, HelpOverlay, HelpTopic, History,
+        MIN_SPLIT_WIDTH, MenuNotice, QuakeNotices, Renderer, Scene,
     },
-    settings::{DEFAULT_HISTORY_ROWS, MAX_HISTORY_ROWS, Settings, StationGrouping},
+    settings::{DEFAULT_HISTORY_ROWS, Settings, StationGrouping},
     tsunami::{self, Validity},
 };
+
+mod settings_menu;
+
+use settings_menu::SettingsMenu;
 
 pub fn tty() -> bool {
     io::stdout().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb")
@@ -89,6 +92,12 @@ impl Console {
         out.write_all(b"\x1b[?1049h\x1b[?1007l\x1b[?25l\x1b[2J")?;
         out.flush()?;
         Ok(console)
+    }
+
+    pub fn ring(&self) -> io::Result<()> {
+        let mut output = io::stdout().lock();
+        output.write_all(b"\x07")?;
+        output.flush()
     }
 
     pub fn paint(&mut self, frame: &Frame) -> io::Result<()> {
@@ -187,147 +196,6 @@ fn choose_map(
     }
 }
 
-struct SettingsMenu {
-    path: Option<PathBuf>,
-    saved: Settings,
-    draft: Settings,
-    field: usize,
-    notice: Option<(&'static str, bool)>,
-}
-
-impl SettingsMenu {
-    fn load() -> Self {
-        let path = Settings::path();
-        let (saved, notice) = match path.as_deref().map(Settings::load) {
-            Some(Ok(settings)) => (settings, None),
-            Some(Err(_)) => (
-                Settings::default(),
-                Some(("設定を読み込めないため、初期値で起動しました", true)),
-            ),
-            None => (
-                Settings::default(),
-                Some(("設定の保存先が見つかりません", true)),
-            ),
-        };
-        Self {
-            path,
-            saved,
-            draft: saved,
-            field: 0,
-            notice,
-        }
-    }
-
-    fn entries<'a>(&self, row_count: &'a str) -> [(&'static str, &'a str); 5] {
-        [
-            ("地図の描画方式", self.draft.map.label()),
-            (
-                "起動時の地図範囲",
-                if self.draft.national {
-                    "全国"
-                } else {
-                    "震源周辺"
-                },
-            ),
-            ("起動時の震度表示", self.draft.layer.label()),
-            ("観測点のまとめ方", self.draft.station_grouping.label()),
-            ("地震履歴の表示行数", row_count),
-        ]
-    }
-
-    fn handle(
-        &mut self,
-        key: KeyCode,
-        app: &mut App,
-        map: &mut Map,
-        capabilities: &Capabilities,
-    ) -> bool {
-        let save_row = self.entries("").len();
-        match key {
-            KeyCode::Up => self.field = self.field.saturating_sub(1),
-            KeyCode::Down => self.field = (self.field + 1).min(save_row),
-            KeyCode::Home => self.field = 0,
-            KeyCode::End => self.field = save_row,
-            KeyCode::Left | KeyCode::Right if self.field < save_row => {
-                let direction = if key == KeyCode::Right { 1 } else { -1 };
-                match self.field {
-                    0 => {
-                        let choices: Vec<_> = MapMode::ALL
-                            .into_iter()
-                            .filter(|mode| {
-                                *mode == MapMode::Auto || mode.supported(capabilities).is_some()
-                            })
-                            .collect();
-                        let next = choices
-                            .iter()
-                            .position(|&mode| mode == self.draft.map)
-                            .map_or(0, |index| {
-                                (index as isize + direction).rem_euclid(choices.len() as isize)
-                                    as usize
-                            });
-                        self.draft.map = choices[next];
-                    }
-                    1 => self.draft.national = !self.draft.national,
-                    2 => self.draft.layer = self.draft.layer.other(),
-                    3 => self.draft.station_grouping = self.draft.station_grouping.other(),
-                    4 => {
-                        self.draft.history_rows = self
-                            .draft
-                            .history_rows
-                            .saturating_add_signed(direction)
-                            .clamp(1, MAX_HISTORY_ROWS)
-                    }
-                    _ => unreachable!(),
-                }
-                self.notice = None;
-            }
-            KeyCode::Enter if self.field == save_row => self.save(app, map, capabilities),
-            KeyCode::Char('s' | 'S') => self.save(app, map, capabilities),
-            KeyCode::Esc => {
-                self.draft = self.saved;
-                self.notice = None;
-                app.change_tab(Tab::Quake);
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    fn save(&mut self, app: &mut App, map: &mut Map, capabilities: &Capabilities) {
-        self.notice = Some(
-            match self.path.as_deref().map(|path| self.draft.save(path)) {
-                Some(Ok(())) => {
-                    if self.saved.map != self.draft.map
-                        && let Some(next) = self.draft.map.supported(capabilities)
-                    {
-                        *map = next;
-                    }
-                    if self.saved.national != self.draft.national {
-                        app.view = View::new(self.draft.national);
-                    }
-                    if self.saved.layer != self.draft.layer {
-                        app.layer = self.draft.layer;
-                        app.reading_start = 0;
-                    }
-                    if app.station_grouping != self.draft.station_grouping {
-                        app.station_grouping = self.draft.station_grouping;
-                        app.reading_start = 0;
-                    }
-                    app.history_rows = self.draft.history_rows;
-                    self.saved = self.draft;
-                    self.field = self.entries("").len();
-                    ("設定を保存して適用しました", false)
-                }
-                Some(Err(_)) => (
-                    "設定を保存できません。設定フォルダの書き込み権限を確認してください",
-                    true,
-                ),
-                None => ("設定の保存先が見つかりません", true),
-            },
-        );
-    }
-}
-
 pub fn write_inline(out: &mut impl Write, frame: &Frame) -> io::Result<()> {
     if frame.graphic.is_empty() {
         return writeln!(out, "{}", frame.text);
@@ -360,7 +228,7 @@ mod tests {
     fn demo_can_change_intensity_and_toggle_forecast_without_losing_warning_areas() {
         let now = Instant::now();
         let mut app = App::new(Client::new(), Duration::from_secs(2), false);
-        assert!(app.select(KeyCode::Char('4'), 80, now));
+        app.change_tab(Tab::Demo);
         let original = app.current().unwrap().0.into_owned();
         assert!(app.demo.next.is_none());
 
@@ -397,6 +265,34 @@ mod tests {
             "5弱"
         );
         assert!(app.demo.next.is_none());
+    }
+
+    #[test]
+    fn demo_bell_plays_at_start_and_warning_escalation() {
+        let now = Instant::now();
+        let delay = Duration::from_secs(2);
+        let mut app = App::new(Client::new(), delay, false);
+        app.details.next = now + Duration::from_secs(60);
+        app.change_tab(Tab::Demo);
+        assert!(!app.take_eew_bell());
+        assert!(app.select(KeyCode::Char(' '), 80, now));
+        assert!(app.take_eew_bell());
+        assert!(app.update(now + delay));
+        assert!(!app.take_eew_bell());
+        assert!(app.update(now + delay * 2));
+        assert!(!app.take_eew_bell());
+
+        app.select(KeyCode::Char('r'), 80, now);
+        app.select(KeyCode::Char('f'), 80, now);
+        assert!(!app.take_eew_bell());
+        app.select(KeyCode::Char(' '), 80, now);
+        assert!(app.take_eew_bell());
+        assert!(app.update(now + delay));
+        assert!(app.take_eew_bell());
+        app.select(KeyCode::Char('f'), 80, now);
+        assert!(!app.take_eew_bell());
+        app.select(KeyCode::Char('f'), 80, now);
+        assert!(app.take_eew_bell());
     }
 
     #[test]
@@ -571,24 +467,32 @@ enum Tab {
     Quake,
     Eew,
     Tsunami,
-    Demo,
     Settings,
     About,
+    Demo,
 }
 
 impl Tab {
-    const ALL: [Self; 6] = [
+    const MENU: [Self; 5] = [
         Self::Quake,
         Self::Eew,
         Self::Tsunami,
-        Self::Demo,
         Self::Settings,
         Self::About,
     ];
+    const COUNT: usize = Self::Demo as usize + 1;
+
+    fn menu_tab(self) -> Self {
+        if self == Self::Demo {
+            Self::Settings
+        } else {
+            self
+        }
+    }
 
     fn cycle(self, backwards: bool) -> Self {
-        let step = if backwards { Self::ALL.len() - 1 } else { 1 };
-        Self::ALL[(self.index() + step) % Self::ALL.len()]
+        let step = if backwards { Self::MENU.len() - 1 } else { 1 };
+        Self::MENU[(self.menu_tab().index() + step) % Self::MENU.len()]
     }
     fn index(self) -> usize {
         self as usize
@@ -599,7 +503,7 @@ impl Tab {
             Self::Eew => "EEW",
             Self::Tsunami => "津波",
             Self::Demo => "デモ",
-            Self::About => "About",
+            Self::About => "アプリ情報",
             Self::Settings => "設定",
         }
     }
@@ -622,6 +526,7 @@ struct DemoState {
     hidden_areas: Vec<Vec<String>>,
     delay: Duration,
     next: Option<Instant>,
+    bell: bool,
 }
 
 impl DemoState {
@@ -632,7 +537,13 @@ impl DemoState {
             frames,
             delay: delay.max(Duration::from_millis(150)),
             next: None,
+            bell: false,
         }
+    }
+
+    fn announce(&mut self, previous: Option<usize>, index: usize) {
+        let previous = previous.map(|previous| &self.frames[previous]);
+        self.bell |= data::demo_bell(previous, &self.frames[index]);
     }
 }
 
@@ -663,7 +574,7 @@ pub struct App {
     tab: Tab,
     page: Page,
     help_scroll: Option<usize>,
-    selection: [usize; Tab::ALL.len()],
+    selection: [usize; Tab::COUNT],
     scroll: usize,
     reading_start: usize,
     pub view: View,
@@ -676,11 +587,14 @@ pub struct App {
     queries: Option<Sender<LiveQuery>>,
     provider: Provider,
     connected: Option<bool>,
+    last_feed_update: Option<ServerClock>,
+    warning_seconds: Option<u64>,
     connection_error: Option<String>,
     history_error: Option<String>,
     eew: eew::State,
     tsunami: tsunami::State,
     tsunami_error: Option<String>,
+    tsunami_received: bool,
     demo: DemoState,
 }
 
@@ -695,11 +609,11 @@ impl App {
             tab: Tab::Quake,
             page: Page::Map,
             help_scroll: None,
-            selection: [0; Tab::ALL.len()],
+            selection: [0; Tab::COUNT],
             scroll: 0,
             reading_start: 0,
             view: View::new(national),
-            layer: Layer::Regions,
+            layer: Layer::default(),
             station_grouping: StationGrouping::default(),
             history_rows: DEFAULT_HISTORY_ROWS,
             reports: Arc::default(),
@@ -708,11 +622,14 @@ impl App {
             queries: None,
             provider: Provider::Wolfx,
             connected: None,
+            last_feed_update: None,
+            warning_seconds: None,
             connection_error: None,
             history_error: None,
             eew: eew::State::default(),
             tsunami: tsunami::State::default(),
             tsunami_error: None,
+            tsunami_received: false,
             demo: DemoState::new(delay),
         }
     }
@@ -752,6 +669,12 @@ impl App {
         }
     }
 
+    pub fn take_eew_bell(&mut self) -> bool {
+        let live = self.eew.take_bell();
+        let demo = std::mem::take(&mut self.demo.bell);
+        live || demo
+    }
+
     fn len(&self) -> usize {
         match self.tab {
             Tab::Quake => self.reports.len(),
@@ -764,9 +687,11 @@ impl App {
     fn change_tab(&mut self, next: Tab) {
         if self.tab != next {
             self.view.reset();
+            if self.tab == Tab::Demo || next == Tab::Demo {
+                self.demo.next = None;
+            }
             if next == Tab::Demo {
                 self.selection[next.index()] = 0;
-                self.demo.next = None;
             }
         }
         self.tab = next;
@@ -799,11 +724,14 @@ impl App {
             other => other,
         };
         match key {
-            KeyCode::Char(digit @ '1'..='6') => {
-                self.change_tab(Tab::ALL[(digit as u8 - b'1') as usize]);
+            KeyCode::Char(digit @ '1'..='5') => {
+                self.change_tab(Tab::MENU[(digit as u8 - b'1') as usize]);
             }
             KeyCode::Tab | KeyCode::BackTab => {
                 self.change_tab(self.tab.cycle(key == KeyCode::BackTab));
+            }
+            KeyCode::Esc if self.tab == Tab::Demo && self.page == Page::Map => {
+                self.change_tab(Tab::Settings);
             }
             KeyCode::Esc if self.tab == Tab::About => self.change_tab(Tab::Quake),
             KeyCode::Up if self.tab == Tab::About => self.scroll = self.scroll.saturating_sub(1),
@@ -861,13 +789,19 @@ impl App {
             }
             KeyCode::Up | KeyCode::Down => {
                 let direction = if key == KeyCode::Up { -1 } else { 1 };
-                if self.page == Page::Text || self.tab == Tab::Tsunami {
+                if self.page == Page::Text
+                    || self.tab == Tab::Tsunami
+                    || (self.tab == Tab::Eew && self.len() == 0)
+                {
                     self.scroll = self.scroll.saturating_add_signed(direction);
                 } else {
                     let limit = self.len().saturating_sub(1);
                     let selected = &mut self.selection[self.tab.index()];
                     let next = selected.saturating_add_signed(direction).min(limit);
                     if *selected != next {
+                        if self.tab == Tab::Demo {
+                            self.demo.announce(Some(*selected), next);
+                        }
                         *selected = next;
                         self.reading_start = 0;
                         if !self.view.national {
@@ -884,6 +818,7 @@ impl App {
                     if *selected + 1 == self.demo.frames.len() {
                         *selected = 0;
                     }
+                    self.demo.announce(None, *selected);
                     self.demo.next = Some(now + self.demo.delay);
                 }
             }
@@ -906,6 +841,7 @@ impl App {
                     let next = if bulletin.warning { "予報" } else { "警報" };
                     bulletin.label = bulletin.label.replacen(previous, next, 1);
                     bulletin.warning = !bulletin.warning;
+                    self.demo.bell |= bulletin.warning && !bulletin.eew_cancelled;
                     std::mem::swap(
                         &mut bulletin.warning_areas,
                         &mut self.demo.hidden_areas[index],
@@ -989,8 +925,12 @@ impl App {
                 }
                 Reply::Live(LiveUpdate::Connection(provider, error)) => {
                     let connected = error.is_none();
+                    if self.provider != provider || self.connected != Some(connected) {
+                        self.tsunami_received = false;
+                    }
                     if self.provider != provider {
                         self.provider = provider;
+                        self.last_feed_update = None;
                         self.list = Arc::default();
                         self.eew.switch_source();
                         self.history_error = None;
@@ -1009,6 +949,11 @@ impl App {
                     self.connection_error = error;
                 }
                 Reply::Live(LiveUpdate::Clock(provider, clock)) => {
+                    if provider == self.provider {
+                        let minute = |sample: ServerClock| sample.utc.timestamp().div_euclid(60);
+                        changed |= self.last_feed_update.map(minute) != Some(minute(clock));
+                        self.last_feed_update = Some(clock);
+                    }
                     eew_changed |= self.eew.sync(clock, now);
                     if provider == Provider::Wolfx {
                         self.tsunami.sync_wolfx(clock, now);
@@ -1032,16 +977,17 @@ impl App {
                     changed |= self.tab == Tab::Quake;
                 }
                 Reply::Live(LiveUpdate::Tsunami(report)) => {
+                    self.tsunami_received |= report.provider == self.provider;
                     self.tsunami.receive(report, now);
                     self.tsunami_error = None;
                     if self.tab == Tab::Tsunami {
                         self.scroll = 0;
                     }
-                    changed |= matches!(self.tab, Tab::Quake | Tab::Tsunami);
+                    changed = true;
                 }
                 Reply::Live(LiveUpdate::TsunamiInvalid(error)) => {
                     self.tsunami_error = Some(error);
-                    changed |= self.tab == Tab::Tsunami;
+                    changed = true;
                 }
             }
         }
@@ -1064,7 +1010,10 @@ impl App {
             }
         }
         changed |= eew_changed || expired;
-        changed |= self.tsunami.update(now) && matches!(self.tab, Tab::Quake | Tab::Tsunami);
+        changed |= self.tsunami.update(now);
+        let warning_seconds = self.eew.warning_seconds(now);
+        changed |= self.tab == Tab::Eew && self.warning_seconds != warning_seconds;
+        self.warning_seconds = warning_seconds;
 
         if self.provider == Provider::Wolfx
             && !self.details.pending
@@ -1083,6 +1032,7 @@ impl App {
         if self.tab == Tab::Demo && self.demo.next.is_some_and(|at| now >= at) {
             let i = &mut self.selection[Tab::Demo.index()];
             let next = (*i + 1).min(self.demo.frames.len() - 1);
+            self.demo.announce(Some(*i), next);
             *i = next;
             self.demo.next = (*i + 1 < self.demo.frames.len()).then(|| now + self.demo.delay);
             changed = true;
@@ -1113,27 +1063,17 @@ impl App {
             }),
             Tab::Tsunami | Tab::About | Tab::Settings => return None,
             Tab::Demo => self.demo.frames.get(selected).map(|frame| {
-                let mut banner = format!("DEMO 架空 {}/{}", selected + 1, self.demo.frames.len());
-                if self.page == Page::Text || !frame.eew {
-                    banner.push_str("  ");
-                    banner.push_str(&frame.label);
-                }
+                let progress = format!("{}/{}", selected + 1, self.demo.frames.len());
+                let banner = if self.page == Page::Text || !frame.eew {
+                    format!("【デモ・架空】 {progress}  {}", frame.label)
+                } else {
+                    progress
+                };
                 (Cow::Borrowed(frame), banner)
             }),
         }
         .unwrap_or_else(|| {
             let label = match (self.tab, self.connected) {
-                (Tab::Eew, Some(false)) => "EEW接続が切れました。再接続中…",
-                (Tab::Eew, None) => "EEWに接続中…",
-                (Tab::Eew, Some(true)) => {
-                    self.eew
-                        .notice()
-                        .unwrap_or(if self.provider == Provider::P2p {
-                            "P2P地震情報（予備） · EEW警報を受信していません"
-                        } else {
-                            "EEWを受信していません"
-                        })
-                }
                 (_, Some(false)) => "地震情報に再接続中…",
                 _ if self.details.error.is_some() => "地震詳細を取得できませんでした",
                 _ => "地震情報を取得中…",
@@ -1188,6 +1128,7 @@ impl App {
         mut display: Display,
         settings: &SettingsMenu,
         active_map: Map,
+        capabilities: &Capabilities,
     ) -> Result<()> {
         if self.page == Page::List && display.width() >= MIN_SPLIT_WIDTH {
             self.page = Page::Map;
@@ -1203,10 +1144,9 @@ impl App {
             layer
         });
         let mut draw = |frame: &Frame| console.paint_layers(frame, overlay.as_ref());
-        let items = Tab::ALL.map(|tab| {
+        let items = Tab::MENU.map(|tab| {
             let bulletin = match tab {
                 Tab::Eew => self.eew.active(),
-                Tab::Demo if tab == self.tab => self.demo.frames.get(self.selection[tab.index()]),
                 _ => None,
             };
             let (label, notice) = match (tab, bulletin.filter(|bulletin| bulletin.eew)) {
@@ -1215,37 +1155,43 @@ impl App {
                     ("EEW 警報", Some(MenuNotice::Warning))
                 }
                 (Tab::Eew, Some(_)) => ("EEW 予報", Some(MenuNotice::Forecast)),
-                (Tab::Demo, Some(bulletin)) if bulletin.warning => {
-                    ("デモ 警報", Some(MenuNotice::Warning))
-                }
-                (Tab::Demo, Some(_)) => ("デモ 予報", Some(MenuNotice::Forecast)),
                 _ => (tab.label(), None),
             };
             screen::MenuItem {
                 key: (b'1' + tab.index() as u8) as char,
                 label,
-                active: tab == self.tab,
+                active: tab == self.tab.menu_tab(),
                 notice,
             }
         });
-        let menu = screen::menu_lines(&items, display);
+        let mut menu = screen::menu_lines(&items, display);
+        let feed_status = self.feed_status();
+        let connection = feed_status.connection;
+        screen::append_feed_status(&mut menu, feed_status, display);
         if self.tab == Tab::Settings {
-            let rows = format!("{} 行", settings.draft.history_rows);
             return Ok(draw(&screen::settings(
                 &menu,
-                &settings.entries(&rows),
-                settings.field,
-                settings.draft != settings.saved,
-                (active_map.label() != settings.draft.map.label()).then(|| active_map.label()),
+                &settings.rows(capabilities),
+                settings.selected,
+                active_map.label(),
                 settings.notice,
                 display,
             ))?);
         }
         if self.tab == Tab::About {
-            return Ok(draw(&screen::about(&menu, display, &mut self.scroll))?);
+            return Ok(draw(&screen::about(
+                &menu,
+                display,
+                &mut self.scroll,
+                AboutInfo {
+                    rendering: active_map,
+                    capabilities,
+                    connection,
+                },
+            ))?);
         }
         if self.tab == Tab::Tsunami {
-            let (status, alert, lines) = self.tsunami_display();
+            let (status, alert, lines, notes) = self.tsunami_display();
             let frame = screen::panel(
                 &menu,
                 screen::NoticePanel {
@@ -1253,7 +1199,23 @@ impl App {
                     status,
                     alert,
                     lines: &lines,
-                    actions: &["↑↓ スクロール"],
+                    notes: &notes,
+                },
+                display,
+                &mut self.scroll,
+            );
+            return Ok(draw(&frame)?);
+        }
+        if self.tab == Tab::Eew && self.eew.active().is_none() {
+            let (status, notes) = self.idle_eew_display();
+            let frame = screen::panel(
+                &menu,
+                screen::NoticePanel {
+                    title: "緊急地震速報",
+                    status,
+                    alert: false,
+                    lines: &[],
+                    notes: &notes,
                 },
                 display,
                 &mut self.scroll,
@@ -1263,23 +1225,6 @@ impl App {
         let Some((bulletin, banner)) = self.current() else {
             return Ok(());
         };
-        if self.tab == Tab::Eew && self.eew.active().is_none() {
-            let details = self.connection_error.iter().cloned().collect::<Vec<_>>();
-            let mut scroll = 0;
-            let frame = screen::panel(
-                &menu,
-                screen::NoticePanel {
-                    title: "緊急地震速報",
-                    status: &bulletin.label,
-                    alert: false,
-                    lines: &details,
-                    actions: &[],
-                },
-                display,
-                &mut scroll,
-            );
-            return Ok(draw(&frame)?);
-        }
         let cached_history = self
             .reports
             .first()
@@ -1330,15 +1275,17 @@ impl App {
             return Ok(draw(&frame)?);
         }
         let actions: &[&str] = match self.tab {
-            Tab::Quake if display.width() < MIN_SPLIT_WIDTH => &["B 履歴", "↑↓ 選択", "Enter 地図"],
-            Tab::Quake => &screen::QUAKE_KEYS,
+            Tab::Quake if display.width() < MIN_SPLIT_WIDTH => {
+                &["B 履歴", "↑↓ 選択", "V 地域別/観測点"]
+            }
+            Tab::Quake => &["↑↓ 選択", "←→ 震度一覧", "V 地域別/観測点"],
             Tab::Demo => {
                 let playback = if self.demo.next.is_some() {
                     "Space 停止"
                 } else {
                     "Space 再生"
                 };
-                &["↑↓ 選択", playback]
+                &["↑↓ 選択", playback, "Esc 設定へ"]
             }
             _ => &[],
         };
@@ -1361,6 +1308,8 @@ impl App {
                 &banner
             },
             eew_source: live_eew.then_some(bulletin.provider.label()),
+            warning_seconds: if live_eew { self.warning_seconds } else { None },
+            demo: self.tab == Tab::Demo,
             series,
             view: self.view,
             layer: self.layer,
@@ -1398,64 +1347,132 @@ impl App {
         QuakeNotices { eew, tsunami }
     }
 
-    fn tsunami_display(&self) -> (&'static str, bool, Vec<String>) {
-        let mut lines = Vec::new();
-        if self.provider == Provider::P2p {
-            lines.push("ライブ配信 · P2P地震情報（予備）".into());
+    fn confirmed_tsunami(&self) -> Option<&data::Tsunami> {
+        self.tsunami.verified(self.provider).filter(|report| {
+            report.status != TsunamiStatus::Clear
+                || (self.connected == Some(true)
+                    && self.provider == Provider::Wolfx
+                    && self.tsunami_received
+                    && self.tsunami_error.is_none())
+        })
+    }
+
+    fn feed_status(&self) -> FeedStatus {
+        let backup = self.provider == Provider::P2p;
+        let connection = match (self.connected, backup) {
+            (Some(true), false) => "● Wolfx",
+            (Some(true), true) => "● P2P（予備）",
+            (Some(false), false) => "○ 再接続中",
+            (Some(false), true) => "○ 再接続中",
+            (None, _) => "○ 接続中",
+        };
+        let quiet = self.connected == Some(true) && self.eew.can_confirm_idle();
+        let eew = match self.eew.active() {
+            Some(report) if report.eew_cancelled => ("EEW 取消", None),
+            Some(report) if report.warning => ("EEW 警報", Some(MenuNotice::Warning)),
+            Some(_) => ("EEW 予報", Some(MenuNotice::Forecast)),
+            None if quiet && backup => ("EEW 警報なし", None),
+            None if quiet => ("EEW なし", None),
+            None => ("EEW 未確認", None),
+        };
+        let tsunami = match self.confirmed_tsunami().map(|report| report.status) {
+            Some(TsunamiStatus::Alert) => ("津波 警報等", Some(MenuNotice::Warning)),
+            Some(TsunamiStatus::Forecast) => ("津波 予報", Some(MenuNotice::Forecast)),
+            Some(TsunamiStatus::Clear) => ("津波 なし", None),
+            _ => ("津波 未確認", None),
+        };
+        FeedStatus {
+            connection,
+            online: self.connected == Some(true),
+            updated: self.last_feed_update.map(|clock| {
+                clock
+                    .utc
+                    .with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).unwrap())
+            }),
+            eew,
+            tsunami,
+        }
+    }
+
+    fn idle_eew_display(&self) -> (&'static str, Vec<String>) {
+        let status = match self.connected {
+            None => "EEWに接続中…",
+            Some(false) => "EEWの発表状況を確認できません",
+            Some(true) if !self.eew.can_confirm_idle() => "EEWの発表状況を確認中…",
+            Some(true) if self.provider == Provider::P2p => "現在受信中のEEW警報はありません",
+            Some(true) => "現在表示中のEEWはありません",
+        };
+        let mut notes = Vec::new();
+        if let Some((issued, expired)) = self.eew.latest() {
+            let reason = if expired {
+                " · 120秒を過ぎたため非表示"
+            } else {
+                ""
+            };
+            notes.push(format!("直近 {} JST{reason}", issued.format("%H:%M:%S")));
+        }
+        if !self.eew.can_confirm_idle()
+            && let Some(notice) = self.eew.notice()
+        {
+            notes.push(notice.into());
         }
         if let Some(error) = &self.connection_error {
-            lines.push(format!("接続を確認中 · {error}"));
+            notes.push(format!("再接続中 · {error}"));
         }
-        if let Some(error) = &self.tsunami_error {
-            lines.push(format!("津波情報を読み取れません · {error}"));
+        (status, notes)
+    }
+
+    fn tsunami_display(&self) -> (&'static str, bool, Vec<String>, Vec<String>) {
+        let mut notes = Vec::new();
+        let mut areas = Vec::new();
+        if let Some(last) = self.tsunami.last_issued {
+            notes.push(format!("最後の発表 {} JST", last.format("%m/%d %H:%M")));
         }
-        if let Some(report) = self.tsunami.verified(self.provider) {
-            if let Some(issued) = report.issued {
-                lines.push(format!(
-                    "気象庁 発表 {} JST · Wolfx",
-                    issued.format("%m/%d %H:%M")
-                ));
+        let confirmed = self.confirmed_tsunami();
+        let status = match confirmed {
+            Some(report) if report.status == TsunamiStatus::Alert => {
+                areas.extend(report.areas.iter().cloned());
+                "津波警報・注意報 発表中"
+            }
+            Some(report) if report.status == TsunamiStatus::Forecast => {
+                areas.extend(report.areas.iter().cloned());
+                "津波予報 発表中"
+            }
+            Some(_) => "現在、津波の発表はありません",
+            None if self.tsunami.wolfx.is_none() && self.connected.is_none() => "津波情報を取得中…",
+            None => "現在の津波の発表状況は未確認",
+        };
+        if self.provider == Provider::P2p
+            && let Some(report) = &self.tsunami.reference
+            && confirmed.is_none()
+        {
+            let label = if report.status == (TsunamiStatus::Reference { cancelled: true }) {
+                "参考 · P2Pの解除報"
+            } else {
+                "参考 · P2Pが受信した発表内容"
+            };
+            areas.push(label.into());
+            areas.extend(report.areas.iter().cloned());
+        }
+        if let Some(report) = &self.tsunami.wolfx {
+            if report.status == TsunamiStatus::Expired {
+                notes.push("最後の発表の有効期限切れ".into());
+            }
+            if self.tsunami.validity == Validity::Expired {
+                notes.push("配信確認期限を過ぎています".into());
             }
             if let Some(until) = report.valid_until {
-                lines.push(format!(
-                    "配信確認期限 {} JST",
+                notes.push(format!(
+                    "配信確認期限 {} JST · Wolfx",
                     until.format("%m/%d %H:%M:%S")
                 ));
             }
-            lines.extend(report.areas.iter().cloned());
-            return (report.title, report.alert, lines);
         }
-        if self.provider == Provider::P2p {
-            if let Some(report) = &self.tsunami.reference {
-                if let Some(issued) = report.issued {
-                    lines.push(format!(
-                        "気象庁 発表 {} JST · P2P地震情報",
-                        issued.format("%m/%d %H:%M")
-                    ));
-                }
-                lines.push(report.title.into());
-                lines.extend(report.areas.iter().cloned());
-            }
-            return ("現在の津波状況は未確認", false, lines);
+        if let Some(error) = &self.tsunami_error {
+            notes.push(format!("津波情報の取得・読み取りに失敗 · {error}"));
         }
-        let status = match self.tsunami.validity {
-            Validity::AwaitingClock => "Wolfxの時刻を確認中…",
-            Validity::Expired => "配信確認期限を過ぎました · 現況未確認",
-            _ if self.tsunami.wolfx.is_none() => "津波情報を取得中…",
-            _ => "現在の津波状況は未確認",
-        };
-        if let Some(until) = self
-            .tsunami
-            .wolfx
-            .as_ref()
-            .and_then(|report| report.valid_until)
-        {
-            lines.push(format!(
-                "配信確認期限 {} JST · Wolfx",
-                until.format("%m/%d %H:%M:%S")
-            ));
-        }
-        (status, false, lines)
+        let alert = confirmed.is_some_and(data::Tsunami::alert);
+        (status, alert, areas, notes)
     }
 }
 
@@ -1537,8 +1554,12 @@ pub fn run(
                     } else {
                         key.code
                     };
-                    changed |= if app.help_scroll.is_none()
-                        && app.tab == Tab::Settings
+                    let in_settings = app.help_scroll.is_none() && app.tab == Tab::Settings;
+                    changed |= if in_settings && settings.trial_key(code) {
+                        console.ring()?;
+                        settings.notice = Some(("端末ベルを送信しました", false));
+                        true
+                    } else if in_settings
                         && settings.handle(code, &mut app, &mut map, &capabilities)
                     {
                         true
@@ -1549,13 +1570,13 @@ pub fn run(
                 _ => {}
             }
         }
+        if app.take_eew_bell() && settings.saved.eew_bell {
+            console.ring()?;
+        }
         let mut view = display(colors, map);
         changed |= resize.update(&mut view, Instant::now());
         if changed {
-            if app.tab == Tab::About {
-                view.map = map;
-            }
-            app.paint(renderer, &mut console, view, &settings, map)?;
+            app.paint(renderer, &mut console, view, &settings, map, &capabilities)?;
         }
     }
 }

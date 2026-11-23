@@ -46,8 +46,8 @@ pub const PALETTE: [Rgb; 23] = [
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layer {
-    #[default]
     Regions,
+    #[default]
     Stations,
 }
 
@@ -61,7 +61,7 @@ impl Layer {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Regions => "広域",
+            Self::Regions => "地域別",
             Self::Stations => "観測点",
         }
     }
@@ -525,7 +525,7 @@ impl Atlas {
                 raster.paint(lake, SEA, extent);
             }
         }
-        if layer == Layer::Stations {
+        if image && layer == Layer::Stations {
             for point in bulletin.stations.iter().rev() {
                 if let Some((where_, level)) = point.location.zip(point.level.index()) {
                     raster.mark(where_, STATION + level, extent, image);

@@ -1,110 +1,144 @@
 # TuiQuake
 
-日本で起きた地震を履歴から選び、**震源と各地の震度を地図で確認**できるターミナルアプリです。緊急地震速報（EEW）と津波情報も、タブを切り替えて見られます。
+<img src="docs/media/tuiquake-logo.svg" alt="TuiQuake" width="480">
 
-[起動する](#起動する) · [設定する](#設定する) · [地震を調べる](#地震を調べる) · [速報と津波情報を見る](#速報と津波情報を見る)
+**ターミナルで見る、日本の地震と緊急地震速報。**
 
-## 起動する
+[![CI](https://github.com/hirokawa-beach/TuiQuake/actions/workflows/ci.yml/badge.svg)](https://github.com/hirokawa-beach/TuiQuake/actions/workflows/ci.yml)
+[![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-3b769b)](LICENSE)
+[![Releases](https://img.shields.io/github/v/release/hirokawa-beach/TuiQuake?display_name=tag)](https://github.com/hirokawa-beach/TuiQuake/releases)
 
-### Windows
+> **非公式の閲覧用アプリです。** 配信や通信による遅延・欠落があります。防災時は気象庁・自治体の公式情報を確認してください。
 
-Windows Terminal の PowerShell で、ソースを取得してビルドします。準備するのは [Git](https://git-scm.com/install/windows)、[Rust](https://rust-lang.org/tools/install/)、[Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) です。
+![地震タブ。左に震源周辺の地図、右に地震の概要・観測点の震度・地震履歴を表示。架空データの画面例。](docs/media/earthquakes.png)
+
+*地震タブの画面例。表示している地震は架空です。*
+
+<details>
+<summary>EEW警報デモを見る</summary>
+
+![架空のEEWデモ。黄色の予報が赤の警報に切り替わり、対象地域が地図と一覧に表示される。](docs/media/eew-demo.gif)
+
+</details>
+
+## 特長
+
+- **地震履歴を地図で見る。** 地震を選ぶと震源と各地の震度が切り替わります。
+- **観測点まで確認する。** 震度別・都道府県別の観測点一覧と、地域ごとの最大震度を切り替えられます。
+- **緊急地震速報と津波情報を受信する。** 速報は予報と警報を色分けし、他のタブでも通知します。
+- **端末に合わせて地図を描く。** Sixel と Kitty の画像描画に対応しています。
+
+## クイックスタート
+
+[Releases](https://github.com/hirokawa-beach/TuiQuake/releases) に公開済みのバイナリがあれば、OSとCPUに合うファイルをダウンロードします。リリースがまだない場合は[ソースからビルド](#ソースからビルド)してください。
+
+| 環境 | ファイル |
+| --- | --- |
+| Windows（x86-64） | `tuiquake-windows-x86_64.exe` |
+| Linux（x86-64 / ARM64） | `tuiquake-linux-x86_64` / `tuiquake-linux-aarch64` |
+| macOS（Intel / Apple Silicon） | `tuiquake-macos-x86_64` / `tuiquake-macos-aarch64` |
+
+ダウンロード先のディレクトリでファイルを実行します。以下は x86-64 の例です。
+
+**Windows の PowerShell**
 
 ```powershell
-git clone https://github.com/hirokawa-beach/TuiQuake.git
-cd TuiQuake
-cargo build --release --locked
-.\target\release\tuiquake.exe
+.\tuiquake-windows-x86_64.exe
 ```
 
-### Linux / macOS
+**Linux**
 
-[Rust](https://rust-lang.org/tools/install/) と Git、Cコンパイラを用意します。Ubuntu なら `sudo apt install build-essential git`、macOS なら `xcode-select --install` で開発ツールを用意できます。
+```bash
+chmod +x ./tuiquake-linux-x86_64
+./tuiquake-linux-x86_64
+```
+
+macOS でも、自分の機種用のファイル名で同じ手順を実行できます。
+
+地図の描画方式を選んだら、**4 で設定を開き、「EEWデモ」を選んで Enter** を押します。Space で再生、F で予報と警報を切り替え、Esc で設定に戻れます。H で操作を確認できます。
+
+## 必要な環境
+
+- **Windows** — Windows Terminal と等幅フォントの Cascadia Mono が出発点です。 [Windows Terminal の外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
+- **Linux / macOS** — 画像地図には Kitty など、画像プロトコルに対応したターミナルを使えます。 [Kitty のグラフィックスプロトコル](https://sw.kovidgoyal.net/kitty/graphics-protocol.html)
+- **共通** — 日本語を表示できる等幅フォントと、ライブ配信を受信するためのインターネット接続が必要です。地図の描画方式は端末の検出結果に合わせて選べます。
+
+## 主なキー
+
+| 操作 | キー |
+| --- | --- |
+| タブ移動 | 1 地震 / 2 EEW / 3 津波 / 4 設定 / 5 アプリ情報 |
+| 履歴を選択・各地の震度をスクロール | ↑ ↓ / ← → |
+| 地図の移動・拡縮 | W A S D / + − |
+| 地域別・観測点を切り替え・文字詳細を開く | V / I |
+| タブごとのヘルプ・終了 | H / Q |
+
+狭い端末では、B で地震履歴と地図を切り替えられます。震度の 5- / 5+ は 5弱 / 5強、6- / 6+ は 6弱 / 6強です。
+
+## 設定
+
+4 で設定を開き、↑ ↓ で項目を選びます。← → または Space で変更すると自動で保存されます。
+
+- **地図** — 描画方式の「自動」は次の起動時に選択画面を開きます。固定の描画方式を選ぶとその場で切り替わります。起動時の範囲も設定できます。
+- **震度** — 初期値は観測点の震度別表示です。地域別表示と、都道府県別の観測点表示も選べます。
+- **履歴** — 初期値は10行です。5 / 10 / 20 / 30行、または端末の高さに合わせる「自動」を選べます。
+- **EEWの端末ベル** — 初報や警報への切り替わりに端末へベルを送ります。設定行で Enter を押すと試し鳴らしできます。音や通知の挙動は端末の設定に従います。
+
+## 仕組みとデータ
+
+上部のステータスで接続先、最後の応答時刻（JST）、EEW・津波の状況が分かります。
+
+- **配信** — 地震一覧・EEW・津波情報は Wolfx の WebSocket、地震詳細は Wolfx の HTTP API から取得します。ライブ配信が途切れると P2P地震情報へ切り替え、Wolfx の復旧時に戻ります。P2P の EEW は警報が対象です。
+- **EEW** — 配信元のサーバー時刻で発表から120秒未満の報を表示します。地域別の推定震度が届いた場合は一覧で確認でき、警報対象は地図にも表示します。
+- **津波** — Wolfx の発表は配信確認期限まで現況として表示します。期限の経過後と、P2P への切り替え中は現況未確認と表示します。届いた発表は対象地域や第1波の見込みを確認できます。
+
+## ソースからビルド
+
+[Git](https://git-scm.com/install/) と [Rust](https://rust-lang.org/tools/install/) を用意します。Windows は [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)、Ubuntu は `build-essential`、macOS は Xcode Command Line Tools（`xcode-select --install`）も必要です。
 
 ```bash
 git clone https://github.com/hirokawa-beach/TuiQuake.git
 cd TuiQuake
 cargo build --release --locked
-./target/release/tuiquake
 ```
 
-初期設定では、起動時に地図の描画方式を選べます。端末が対応していれば、Sixel や Kitty の画像描画を選べます。Unicode Braille は現在、非推奨/表示調節中です。
-
-まず画面を試すなら、**`4` でデモを開いて `Space`**。架空の速報が順に表示されます。`F` で予報と警報を切り替えられます。
-
-`H` で、いま開いているタブの操作ヘルプを表示できます。`H` または `Esc` で閉じます。
-
-## 設定する
-
-**`5` で設定タブ**を開きます。`↑` `↓` で項目を選び、`←` `→` で値を変更します。下の **保存して適用** を選んで `Enter`、または `S` で保存します。`Esc` は未保存の変更を破棄して、地震画面に戻ります。
-
-地図の描画方式、起動時の地図範囲（震源周辺／全国）、震度表示（広域／観測点）、観測点のまとめ方、地震履歴の表示行数を次回の起動にも引き継げます。観測点は初期設定で震度別です。地震履歴は初期設定で最大10行、設定では1〜50行を指定できます。実際の表示行数は端末の高さに収まる範囲です。描画方式を「起動時に選ぶ」にすると、起動のたびに選択画面が出ます。`--map` や `--japan` を指定して起動した場合は、その指定が優先されます。
-
-## 地震を調べる
-
-1. **`1` で地震タブ**を開きます。右側の地震履歴を `↑` `↓` で選ぶと、地図と概要が切り替わります。
-2. **`Enter` で震源周辺へ**。地図の `✚` が震央です。`W` `A` `S` `D` で移動し、`+` `-` で拡大・縮小できます。
-3. **`V` で震度表示を切り替え**ます。「広域」は地域ごとの最大震度、「観測点」は地点ごとの震度を表示します。設定で都道府県別と震度別を切り替えられます。`I` を押すと、地域名・観測点名と震度を文字で確認できます。
-
-端末の幅が狭いときは、`B` で地震履歴と地図を行き来できます。震度の `5-` / `5+` は **5弱 / 5強**、`6-` / `6+` は **6弱 / 6強** です。
+Windows の PowerShell では `.\target\release\tuiquake.exe`、Linux / macOS では `./target/release/tuiquake` で起動します。
 
 <details>
-<summary>ほかのキー操作</summary>
-
-| したいこと | キー |
-|---|---|
-| タブを移動する | `1` 地震、`2` EEW、`3` 津波、`4` デモ、`5` 設定、`6` About。`Tab` / `Shift+Tab` でも移動 |
-| 各地の震度一覧をスクロールする | `←` / `→`（地震タブ） |
-| 文字詳細・津波情報をスクロールする | `↑` / `↓` |
-| 文字詳細から地図へ戻る | `I` / `B` |
-| 全国と震源周辺を切り替える | `Z` |
-| 地図の位置と倍率を戻す | `0` |
-| 地震・津波を更新する | `R` |
-| デモで報を選ぶ・推定最大震度を変更する | `↑` / `↓` で報を選択。EEWの報では `←` / `→` で震度を変更 |
-| デモを初期化する | `R`（デモタブ） |
-| 終了する | `Q` |
-
-</details>
-
-## 速報と津波情報を見る
-
-- **`2` 緊急地震速報** — 受信中の速報を表示します。見出しは**予報が黄色、警報が赤**。報数と推定最大震度を確認できます。速報に地域別の予想震度が含まれていれば一覧に表示し、`I` ですべての地域を確認できます。警報時は対象地域も地図に表示します。他のタブを開いていても速報は受信し、上部のメニューに知らせます。
-
-EEWの表示対象は、配信元のサーバー時刻で発表から120秒未満の報です。時刻を確認できない場合や、120秒以上経過した報を受信した場合はEEWタブに理由を表示します。
-
-- **`3` 津波情報** — 津波警報・注意報・予報の状況を表示します。発表データに含まれていれば、対象地域や第1波の見込みも確認できます。
-
-Wolfx の津波情報は、信頼期限が確認できる間だけ現在の状況として表示します。津波タブに配信確認期限を JST で表示し、通信が途切れても期限に達すると「現況未確認」に切り替わります。
-
-地震一覧・EEW・津波情報は通常 Wolfx の WebSocket で受信し、地震詳細は Wolfx の HTTP API で取得します。Wolfx のライブ配信に接続できない場合や応答が途切れた場合は、自動で P2P地震情報に切り替え、Wolfx が復旧すると戻ります。P2P の EEW は警報が対象です。P2P の津波情報は発表内容を閲覧でき、現況は未確認と表示します。
-
-> TuiQuake は非公式の閲覧用アプリです。配信や通信による遅延・欠落があるため、防災時は気象庁や自治体の公式情報を確認してください。
-
-<details>
-<summary>コマンドで直接表示する・描画方式を指定する</summary>
-
-`tuiquake.exe` の後ろに、見たい情報に合わせてコマンドを指定します。
+<summary>コマンドで直接表示する</summary>
 
 | コマンド | 表示内容 |
-|---|---|
+| --- | --- |
 | `latest` | 最新の地震 |
-| `eew` | 最新の緊急地震速報1報（P2Pへの切り替え時は警報） |
-| `replay` | 架空の地震と速報のデモ。オフラインで実行でき、`--delay 4` で4秒間隔に変更 |
-| `replay --history` | `eew` と同じ最新1報 |
+| `eew` / `replay --history` | 最新の緊急地震速報1報（P2P切り替え時は警報） |
+| `replay --delay 4` | 架空の地震と速報のデモを4秒間隔で表示。オフラインでも利用可能 |
 | `watch` | 地震と緊急地震速報を受信し次第更新 |
 
 ```powershell
 .\target\release\tuiquake.exe latest --japan
-.\target\release\tuiquake.exe --map braille
 ```
 
-`--japan` は全国表示。描画方式は `--map sixel` / `--map kitty` / `--map braille` / `--map text` から指定できます。`text` は4分割ブロックの文字地図です。直接表示のコマンドは端末に合わせて描画方式を選び、ファイルやパイプに出力するときは既定で `text` を使います。
+```bash
+./target/release/tuiquake latest --japan
+```
+
+`--japan` は全国表示です。`--map sixel` / `--map kitty` / `--map braille` / `--map text` で描画方式を指定できます。ファイルやパイプに出力するときは、既定で文字地図（text）を使います。
 
 </details>
 
+## トラブルシュート
+
+- **地図に隙間が出る、文字の桁がずれる** — 等幅フォントを使い、日本語のフォールバックと端末の文字間隔を確認してください。 日本語の等幅フォントには Noto Sans Mono CJK JP も使えます。 [Noto Sans CJK のダウンロード案内](https://github.com/notofonts/noto-cjk/tree/main/Sans#language-specific-otfs)
+- **画像地図が表示されない** — 端末の Sixel / Kitty 対応を確認してください。`--map text` で文字地図を選べます。文字地図と Unicode Braille は非推奨です。この2方式では観測点の震度を一覧で確認できます。
+- **不具合を報告する** — 「5 アプリ情報」のバージョン、端末、描画方式と、問題が出たときの操作を添えてください。 [GitHub Issues](https://github.com/hirokawa-beach/TuiQuake/issues)
+
+## English
+
+TuiQuake is a Japanese-language terminal app for browsing earthquakes, station-level seismic intensity, earthquake early warnings, and tsunami bulletins. It offers Sixel, Kitty, and text maps. It is an unofficial viewer. For safety decisions, consult official information from the Japan Meteorological Agency or local authorities.
+
 ## ライセンスとデータの出典
 
-TuiQuake のオリジナルコードは [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）です。Windows 版の依存ライブラリのライセンスは [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に掲載しています。
+TuiQuake のオリジナルコードは [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）です。配布バイナリの依存ライブラリのライセンスは [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に掲載しています。
 
 - **地震・EEW・津波** — データ提供 Wolfx Project。気象庁発表の情報を [Wolfx WebSocket](https://wolfx.jp/docs/websocket/) と [Wolfx Open API](https://wolfx.jp/docs/open-api/) 経由で取得します。データを使う機能は無償で提供します。 [Wolfx Project の利用規約](https://wolfx.jp/legal/terms/)
 - **予備配信** — P2P地震情報。 [P2P地震情報 API](https://www.p2pquake.net/develop/json_api_v2/) [二次利用ガイドライン](https://www.p2pquake.net/secondary_use/)

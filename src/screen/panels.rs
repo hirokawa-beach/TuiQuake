@@ -10,7 +10,7 @@ pub(super) fn earthquake_summary(
     let eew = match notices.eew {
         Some(true) => "あり",
         Some(false) => "なし",
-        None => "記録なし",
+        None => "未受信",
     };
     let flags = [
         format!("EEW {eew}"),
@@ -119,30 +119,24 @@ pub(super) fn earthquake_sidebar(
     lines.resize_with(1 + summary_rows, String::new);
 
     let remaining = rows - lines.len();
-    let history_height = history.target_height().min(remaining - min_readings);
+    let max_history = remaining - min_readings;
+    let available = if history.row_limit == AUTO_HISTORY_ROWS {
+        (remaining / 2).max(MIN_HISTORY).min(max_history)
+    } else {
+        max_history
+    };
+    let history_height = history.target_height(available);
     let slots = remaining - history_height - 1;
     let (title, entries) = match layer {
         Layer::Stations => station_readings_window(b, grouping, start, slots, width),
         Layer::Regions => {
             let count = b.regions.len();
-            let start = if count <= slots {
-                0
-            } else {
-                start.min(count - 1)
-            };
-            let end = (start + slots).min(count);
+            let (start, shown, entries) = regional_window(b, start, slots);
             let mut title = format!("各地の震度 · {}", layer.label());
-            if count > slots {
-                write!(title, "  {}–{end}/{count}", start + 1).unwrap();
+            if shown > 0 && shown < count {
+                write!(title, "  {}–{}/{count}", start + 1, start + shown).unwrap();
             }
-            (
-                title,
-                b.regions[start..end]
-                    .iter()
-                    .map(reading_row)
-                    .map(ReadingLine::from)
-                    .collect(),
-            )
+            (title, entries)
         }
     };
     lines.push(section_heading(&title, width, ansi));
@@ -217,12 +211,14 @@ fn overview_facts(b: &Bulletin) -> [String; 3] {
         } else {
             format!("M{}", b.magnitude)
         },
-        b.depth
-            .map_or_else(|| "深さ 不明".into(), |km| format!("深さ {km} km")),
+        b.depth.map_or_else(
+            || "深さ 不明".into(),
+            |km| format!("深さ {}", depth_label(km)),
+        ),
     ]
 }
 
-pub(super) fn eew_banner(b: &Bulletin, width: usize, ansi: bool) -> Vec<String> {
+pub(super) fn eew_banner(b: &Bulletin, width: usize, ansi: bool, demo: bool) -> Vec<String> {
     let (kind, background) = if b.eew_cancelled {
         ("取消", None)
     } else if b.warning {
@@ -230,7 +226,8 @@ pub(super) fn eew_banner(b: &Bulletin, width: usize, ansi: bool) -> Vec<String> 
     } else {
         ("予報", Some(FORECAST_INK))
     };
-    let title = format!("緊急地震速報（{kind}）");
+    let prefix = if demo { "【デモ・架空】" } else { "" };
+    let title = format!("{prefix}緊急地震速報（{kind}）");
     let mut report = b
         .eew_serial
         .map_or_else(String::new, |number| format!("第{number}報"));
@@ -467,7 +464,7 @@ pub fn detail(
             format!("{}  {count} 件", observation_label(layer)),
             MUTED,
         ));
-        if layer == Layer::Stations && grouping == StationGrouping::Intensity {
+        if layer == Layer::Regions || grouping == StationGrouping::Intensity {
             intensity_rows_start = Some(rows.len());
         }
         rows.extend(readings(b, layer, grouping, inner));

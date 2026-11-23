@@ -9,7 +9,8 @@ use serde_json::Value;
 
 use super::{
     Bulletin, Client, ForecastArea, Level, LiveQuery, LiveUpdate, Observation, Provider, Report,
-    Result, ServerClock, Stamp, Tsunami, depth, entries, epicenter, magnitude, parse_time,
+    Result, ServerClock, Stamp, Tsunami, TsunamiStatus, depth, entries, epicenter, magnitude,
+    parse_time,
     socket::{connect_live, http_clock, read_live, read_timed_out},
     station_location, text,
 };
@@ -140,12 +141,7 @@ fn tsunami(packet: &Value) -> Result<Tsunami> {
         .collect();
     Ok(Tsunami {
         provider: Provider::P2p,
-        title: if cancelled {
-            "津波警報・注意報の解除報"
-        } else {
-            "津波の発表内容"
-        },
-        alert: false,
+        status: TsunamiStatus::Reference { cancelled },
         valid_until: None,
         issued: Some(issue),
         event_ids: Vec::new(),
@@ -329,11 +325,10 @@ pub(super) fn connect(
     requests: &mpsc::Receiver<LiveQuery>,
     notify: &mut dyn FnMut(LiveUpdate) -> bool,
 ) -> Result<()> {
-    let (mut socket, clock) = connect_live(SOCKET)?;
+    let (mut socket, mut clock) = connect_live(SOCKET)?;
     if !notify(LiveUpdate::Connection(Provider::P2p, None)) {
         return Ok(());
     }
-    let mut has_clock = clock.is_some();
     if let Some(clock) = clock
         && !notify(LiveUpdate::Clock(Provider::P2p, clock))
     {
@@ -345,6 +340,7 @@ pub(super) fn connect(
     let mut refresh_at = Instant::now();
     let mut last_message = refresh_at;
     let mut ping_at = refresh_at + Duration::from_secs(30);
+    let mut clock_at = ping_at;
     loop {
         loop {
             match requests.try_recv() {
@@ -357,15 +353,17 @@ pub(super) fn connect(
             match download.try_recv() {
                 Ok(snapshot) => {
                     pending = None;
-                    let clock = snapshot
+                    let snapshot_clock = snapshot
                         .quakes
                         .as_ref()
                         .ok()
                         .and_then(|(_, clock)| *clock)
                         .or_else(|| snapshot.tsunami.as_ref().ok().and_then(|(_, clock)| *clock));
-                    if !has_clock && let Some(clock) = clock {
-                        has_clock = true;
-                        if !notify(LiveUpdate::Clock(Provider::P2p, clock)) {
+                    if clock.is_none()
+                        && let Some(sample) = snapshot_clock
+                    {
+                        clock = Some(sample);
+                        if !notify(LiveUpdate::Clock(Provider::P2p, sample)) {
                             return Ok(());
                         }
                     }
@@ -423,6 +421,18 @@ pub(super) fn connect(
         match read_live(&mut socket) {
             Ok(packet) => {
                 last_message = Instant::now();
+                if last_message >= clock_at
+                    && let Some(sample) = clock
+                {
+                    clock_at = last_message + Duration::from_secs(30);
+                    let latest = ServerClock {
+                        utc: sample.at(last_message),
+                        received: last_message,
+                    };
+                    if !notify(LiveUpdate::Clock(Provider::P2p, latest)) {
+                        return Ok(());
+                    }
+                }
                 if let Some(update) = packet
                     .as_ref()
                     .and_then(decode)
@@ -456,7 +466,7 @@ mod tests {
             panic!("expected P2P tsunami report");
         };
         assert_eq!(report.provider, Provider::P2p);
-        assert!(!report.alert && report.valid_until.is_none());
+        assert!(!report.alert() && report.valid_until.is_none());
         assert_eq!(report.areas, ["津波警報  岩手県  3m"]);
         assert!(matches!(
             decode(&json!({"code":552})),

@@ -34,6 +34,7 @@ const HELP: &str = "TuiQuake  日本の地震・緊急地震速報をターミ�
   --color <auto|always|never>   テキストの色
   --map <auto|sixel|kitty|braille|text>
                               地図の描画方式（TUI の auto は起動時に選択）
+                              braille / text は非推奨。観測点は一覧で表示
   -h, --help                   ヘルプを表示
   -V, --version                バージョンを表示
 ";
@@ -155,6 +156,14 @@ fn print_frame(frame: &screen::Frame) -> Result<()> {
     Ok(out.flush()?)
 }
 
+fn terminal_bell_enabled(interactive: bool) -> bool {
+    interactive
+        && settings::Settings::path()
+            .as_deref()
+            .and_then(|path| settings::Settings::load(path).ok())
+            .is_some_and(|settings| settings.eew_bell)
+}
+
 fn replay(
     options: &Options,
     renderer: &mut Renderer,
@@ -163,7 +172,8 @@ fn replay(
     interactive: bool,
 ) -> Result<()> {
     let frames = data::demo();
-    let banner = "デモ · 架空の地震";
+    let bell = terminal_bell_enabled(interactive);
+    let banner = "【デモ・架空】";
     let mut console = if interactive {
         Some(ui::Console::enter()?)
     } else {
@@ -179,6 +189,13 @@ fn replay(
                 thread::sleep(options.delay);
             }
         }
+        let previous = index.checked_sub(1).map(|previous| &frames[previous]);
+        if bell
+            && data::demo_bell(previous, bulletin)
+            && let Some(console) = &console
+        {
+            console.ring()?;
+        }
         let label = format!(
             "{banner}  {}/{}   {}",
             index + 1,
@@ -187,6 +204,7 @@ fn replay(
         );
         let mut view = Scene::single(bulletin, options.national, &label);
         view.series = &frames;
+        view.demo = true;
         // The TUI demo keeps its final frame on screen. Direct replay leaves
         // the final frame on the main screen after the timed transitions.
         let frame = renderer.render(view, ui::display(colors, map));
@@ -215,6 +233,7 @@ fn watch(
     } else {
         None
     };
+    let bell = terminal_bell_enabled(interactive);
     let mut app = ui::App::start(client.clone(), options.delay, options.national);
     let waiting = Bulletin {
         label: "取得待ち".into(),
@@ -226,6 +245,12 @@ fn watch(
     loop {
         let now = Instant::now();
         let updated = app.update(now);
+        if app.take_eew_bell()
+            && bell
+            && let Some(console) = &console
+        {
+            console.ring()?;
+        }
         let mut display = ui::display(colors, map);
         let resized = resize.update(&mut display, now);
         if updated || resized {

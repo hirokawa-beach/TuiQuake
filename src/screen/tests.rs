@@ -7,8 +7,11 @@ fn reading_names_start_in_the_same_column_at_every_intensity() {
     bulletin.regions[0].level = Level::Known(4);
     bulletin.regions[1].level = Level::Known(3);
     bulletin.regions[2].level = Level::Other("5弱以上・未入電".into());
-    let rows = readings(&bulletin, Layer::Regions, StationGrouping::Prefecture, 70);
-    let lines: Vec<_> = rows.iter().map(|row| row.render(70, false)).collect();
+    let lines: Vec<_> = bulletin
+        .regions
+        .iter()
+        .map(|region| reading_row(region).0)
+        .collect();
     assert!(lines[0].starts_with("5-  "));
     assert!(lines[1].starts_with(" 4  "));
     assert!(lines[2].starts_with(" —  "));
@@ -88,6 +91,10 @@ fn station_lists_pack_municipalities_by_intensity_and_color_only_the_badge() {
     assert!(badge.contains("\x1b[48;2;255;166;72m"));
     assert!(badge.contains("震度 4 \x1b[0m") && !badge.ends_with("震度 4"));
     assert!(!rows[1].render(width, true).contains("\x1b[48;"));
+    let marked = rows[6].render(width, true);
+    assert_eq!(marked.matches("\x1b[38;2;148;148;148m＊\x1b[0m").count(), 2);
+    assert!(marked.contains("牧ノ内\x1b[0m") && marked.contains("陣内\x1b[0m"));
+    assert_eq!(styled_width(&marked), text[6].width());
 
     let (title, narrow) = station_readings_window(&bulletin, StationGrouping::Intensity, 5, 4, 29);
     assert!(title.contains("6–") && title.ends_with("/9"));
@@ -140,18 +147,27 @@ fn startup_picker_fits_and_keeps_the_selected_renderer_visible() {
 }
 
 #[test]
-fn about_scrolls_from_the_overview_to_the_credits_in_a_small_terminal() {
+fn about_keeps_the_disclaimer_visible_while_scrolling() {
     let menu = ["TuiQuake".into()];
     let display = Display {
         columns: 42,
-        rows: 21,
+        rows: 12,
         colors: true,
         map: Map::Braille,
     };
+    let capabilities = graphics::Capabilities {
+        sixel: Some((10, 20)),
+        kitty: false,
+    };
+    let info = || AboutInfo {
+        rendering: Map::Braille,
+        capabilities: &capabilities,
+        connection: "● P2P（予備）",
+    };
     let mut scroll = 0;
-    let first = about(&menu, display, &mut scroll);
-    assert!(first.text.contains("地震・速報を見る"));
-    assert!(first.text.contains("Unicode Braille"));
+    let first = about(&menu, display, &mut scroll, info());
+    assert!(first.text.contains("アプリ情報"));
+    assert!(first.text.contains("一個人が作った非公式の"));
     assert!(!first.text.contains("Glenn Chappell"));
     assert!(first.text.lines().count() <= display.rows);
     assert!(
@@ -160,12 +176,42 @@ fn about_scrolls_from_the_overview_to_the_credits_in_a_small_terminal() {
             .lines()
             .all(|line| styled_width(line) <= display.width())
     );
+
     scroll = usize::MAX;
-    let last = about(&menu, display, &mut scroll);
-    assert!(last.text.contains("データとクレジット"));
+    let last = about(&menu, display, &mut scroll, info());
+    assert!(last.text.contains("一個人が作った非公式の"));
     assert!(last.text.contains("Glenn Chappell"));
     assert!(scroll > 0 && scroll < usize::MAX);
     assert!(last.text.lines().count() <= display.rows);
+
+    let wide = Display {
+        columns: 112,
+        rows: 52,
+        colors: false,
+        ..display
+    };
+    let diagnostics = about(&menu, wide, &mut 0, info());
+    assert!(
+        diagnostics
+            .text
+            .contains("https://github.com/hirokawa-beach/TuiQuake/issues")
+    );
+    assert!(!diagnostics.text.contains("コミット"));
+    assert!(diagnostics.text.contains("制作者"));
+    assert!(diagnostics.text.contains("hirokawa-beach"));
+    let logo = diagnostics.text.find(LOGO[0]).unwrap();
+    let intro = diagnostics
+        .text
+        .find("一個人が作った非公式の地震情報閲覧用アプリです。")
+        .unwrap();
+    let notice = diagnostics
+        .text
+        .find("災害発生時は気象庁・自治体の公式情報も確認してください。")
+        .unwrap();
+    assert!(logo < intro && intro < notice);
+    assert!(diagnostics.text.contains("GPL-3.0-only"));
+    assert!(diagnostics.text.contains("Sixel 対応  Kitty 未検出"));
+    assert!(diagnostics.text.contains("● P2P（予備）"));
 }
 
 #[test]
@@ -218,6 +264,7 @@ fn interactive_eew_keeps_overview_and_warning_regions_separate() {
         let scene = || Scene {
             menu: &menu,
             eew_source: Some("Wolfx"),
+            warning_seconds: Some(12),
             ..Scene::single(&bulletin, false, "")
         };
         let frame = renderer.render(scene(), display);
@@ -225,6 +272,7 @@ fn interactive_eew_keeps_overview_and_warning_regions_separate() {
         assert!(headline.contains("緊急地震速報（警報） 第2報（最終報）"));
         assert!(headline.contains("\x1b[48;2;255;97;98m"));
         assert!(!headline.contains("Wolfx"));
+        assert!(frame.text.contains("発表から 12秒"));
         assert_eq!(styled_width(headline), columns - 1);
         let overview = frame.text.find("速報概要 · Wolfx").unwrap();
         let intensity = frame.text.find("推定最大").unwrap();
@@ -254,7 +302,8 @@ fn interactive_eew_keeps_overview_and_warning_regions_separate() {
     let frame = renderer.render(
         Scene {
             menu: &menu,
-            ..Scene::single(&bulletin, false, "DEMO 架空 2/3")
+            demo: true,
+            ..Scene::single(&bulletin, false, "2/3")
         },
         Display {
             columns: 88,
@@ -264,10 +313,13 @@ fn interactive_eew_keeps_overview_and_warning_regions_separate() {
         },
     );
     let headline = frame.text.lines().nth(1).unwrap();
-    assert_eq!(headline.trim(), "緊急地震速報（予報） 第2報（最終報）");
+    assert_eq!(
+        headline.trim(),
+        "【デモ・架空】緊急地震速報（予報） 第2報（最終報）"
+    );
     let indent = headline.len() - headline.trim_start().len();
     assert_eq!(indent, (87 - headline.trim().width()) / 2);
-    assert!(frame.text.contains("DEMO 架空 2/3"));
+    assert!(frame.text.contains("2/3"));
     assert!(frame.text.contains("速報概要"));
     assert!(!frame.text.contains("警報対象地域"));
     assert!(frame.text.contains("地域別の予想震度"));
@@ -280,7 +332,7 @@ fn interactive_eew_keeps_overview_and_warning_regions_separate() {
 fn eew_banner_wraps_narrow_forecasts_and_does_not_color_cancellations() {
     let mut bulletin = crate::data::demo().remove(1);
     bulletin.warning = false;
-    let rows = eew_banner(&bulletin, 20, true);
+    let rows = eew_banner(&bulletin, 20, true, false);
     assert_eq!(rows.len(), 2);
     assert!(rows[0].contains("緊急地震速報（予報）"));
     assert!(rows[1].contains("第2報（最終報）"));
@@ -289,7 +341,7 @@ fn eew_banner_wraps_narrow_forecasts_and_does_not_color_cancellations() {
             .all(|row| row.contains("\x1b[48;2;255;222;94m") && styled_width(row) == 20)
     );
     bulletin.eew_cancelled = true;
-    let rows = eew_banner(&bulletin, 48, true);
+    let rows = eew_banner(&bulletin, 48, true, false);
     assert_eq!(rows[0].trim(), "緊急地震速報（取消） 第2報");
 }
 
@@ -357,11 +409,11 @@ fn menu_colors_forecasts_yellow_and_warnings_red() {
         active: true,
         notice: Some(MenuNotice::Warning),
     };
-    assert!(
-        menu_lines(std::slice::from_ref(&item), display)
-            .join("\n")
-            .contains("\x1b[38;2;255;97;98m")
-    );
+    let warning = menu_lines(std::slice::from_ref(&item), display).join("\n");
+    assert!(warning.contains("\x1b[38;2;255;97;98m● EEW 警報 \x1b[0m"));
+    assert!(warning.contains("\x1b[48;2;37;70;87m \x1b[38;2;111;143;151m2 "));
+    assert!(warning.contains("\x1b[38;2;87;210;224mTui"));
+    assert!(warning.contains("\x1b[38;2;251;199;124mQuake"));
 }
 
 #[test]
@@ -449,27 +501,31 @@ fn braille_places_dots_in_one_terminal_cell() {
 }
 
 #[test]
-fn text_map_keeps_observations_and_eew_visible() {
+fn text_map_keeps_epicenter_and_eew_visible() {
     let land = [[map::LAND; SAMPLES_PER_QUADRANT as usize]; 4];
     assert_eq!(
         text_cell(land, Some(map::EPICENTER), true),
         ('✚', map_ink(map::EPICENTER), PALETTE[map::LAND as usize])
     );
-    assert_eq!(text_cell(land, Some(map::STATION + 1), false).0, '●');
     let mut warning = [[map::SEA; SAMPLES_PER_QUADRANT as usize]; 4];
     warning[3][7] = map::WARNING;
     assert_eq!(text_cell(warning, None, false).0, '█');
 }
 
 #[test]
-fn switching_to_stations_draws_dots_without_previous_region_labels() {
+fn station_dots_require_an_image_but_intensity_readings_stay_visible() {
     let mut renderer = Renderer::new().unwrap();
     let bulletin = crate::data::demo().pop().unwrap();
-    for map in [Map::Braille, Map::Image(Image::Sixel((10, 20)))] {
+    for map in [
+        Map::Braille,
+        Map::Text,
+        Map::Image(Image::Sixel((10, 20))),
+        Map::Image(Image::Kitty),
+    ] {
         let display = Display {
             columns: 100,
             rows: 30,
-            colors: false,
+            colors: true,
             map,
         };
         let mut scene = Scene::single(&bulletin, false, "TEST");
@@ -481,9 +537,12 @@ fn switching_to_stations_draws_dots_without_previous_region_labels() {
             &renderer.raster
         };
         assert!(raster.labels.iter().any(Option::is_some));
+
         let frame = renderer.render(Scene::single(&bulletin, false, "TEST"), display);
+        assert!(frame.text.contains("仙台"), "{map:?}");
+        assert_eq!(frame.text.contains('●'), map.image().is_some(), "{map:?}");
         if map.image().is_some() {
-            assert!(frame.graphic.starts_with("\x1bP"));
+            assert!(!frame.graphic.is_empty());
             assert!(renderer.image_raster.labels.is_empty());
             assert!(
                 renderer
@@ -492,9 +551,18 @@ fn switching_to_stations_draws_dots_without_previous_region_labels() {
                     .iter()
                     .any(|&pixel| pixel >= map::STATION)
             );
-        } else {
-            assert!(frame.text.contains('●'));
+        }
+        if !matches!(map, Map::Image(Image::Sixel(_))) {
             assert!(renderer.raster.labels.is_empty());
+            assert!(renderer.raster.markers.contains(&Some(map::EPICENTER)));
+            assert!(
+                renderer
+                    .raster
+                    .markers
+                    .iter()
+                    .flatten()
+                    .all(|&marker| marker == map::EPICENTER)
+            );
         }
     }
 }
@@ -834,6 +902,31 @@ fn wide_map_and_earthquake_sidebar_use_the_available_width() {
             .lines()
             .any(|line| line.starts_with("> ") && line.contains("試験地震 20"))
     );
+
+    let automatic = super::compact(
+        History {
+            reports: &reports,
+            selected: 20,
+            status: "",
+            row_limit: AUTO_HISTORY_ROWS,
+        },
+        Display {
+            columns: 50,
+            rows: 25,
+            colors: false,
+            map: Map::Text,
+        },
+        &menu,
+    );
+    assert_eq!(
+        automatic
+            .text
+            .lines()
+            .filter(|line| line.contains("試験地震"))
+            .count(),
+        21
+    );
+    assert_eq!(automatic.text.lines().count(), 25);
 }
 
 #[test]
@@ -852,7 +945,7 @@ fn help_is_centered_and_only_shows_actions_for_the_current_tab() {
                 ..display
             }
         ),
-        "↑↓ 選択  Enter 地図  H ヘルプ  Q 終了"
+        "↑↓ 選択  B 地図へ  H ヘルプ  Q 終了"
     );
     let mut scroll = 0;
     let quake = help(HelpTopic::QuakeMap { narrow: false }, display, &mut scroll);
@@ -910,12 +1003,126 @@ fn history_shows_depths_and_marks_missing_values() {
         status: "",
         row_limit: 10,
     };
-    for (width, ansi) in [(29, false), (40, true), (56, false)] {
+    let shallow = &reports[0].bulletin;
+    assert!(magnitude_and_depth(shallow).contains("深さ ごく浅い"));
+    assert!(
+        earthquake_summary(shallow, QuakeNotices::default(), 44, 8, false)
+            .iter()
+            .any(|line| line.contains("深さ ごく浅い"))
+    );
+    assert!(
+        eew_overview(shallow, 44, 12, false, None)
+            .iter()
+            .any(|line| line.contains("深さ ごく浅い"))
+    );
+
+    for (width, ansi) in [(29, true), (30, false), (40, true), (56, false)] {
         let lines = history_lines(history, width, 4, ansi);
         assert!(lines[0].contains("深さ") && lines[0].contains("震源地"));
-        assert!(lines[1].contains("0km") && lines[1].contains("三陸沖"));
+        assert!(lines[1].contains("ごく浅い") && lines[1].contains("三陸沖"));
         assert!(lines[2].contains("1000km") && lines[2].contains("父島近海"));
         assert!(lines[3].contains("—") && lines[3].contains("紀伊水道"));
         assert!(lines.iter().all(|line| styled_width(line) <= width));
     }
+}
+
+#[test]
+fn feed_status_fits_and_keeps_quiet_notice_short() {
+    for columns in [25, 80, 122] {
+        let display = Display {
+            columns,
+            rows: 24,
+            colors: true,
+            map: Map::Text,
+        };
+        let mut rows = vec![fit(
+            "TuiQuake  1 地震  2 EEW  3 津波  4 設定  5 アプリ情報",
+            display.width(),
+        )];
+        append_feed_status(
+            &mut rows,
+            FeedStatus {
+                connection: "● Wolfx",
+                online: true,
+                updated: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-11-24T14:21:00+09:00").unwrap(),
+                ),
+                eew: ("EEW なし", None),
+                tsunami: ("津波 なし", None),
+            },
+            display,
+        );
+        let menu = rows.join("\n");
+        assert!(
+            menu.contains("14:21 更新") && menu.contains("EEW なし") && menu.contains("津波 なし")
+        );
+        assert_eq!(rows.len() == 2, columns == 122);
+        assert_eq!(styled_width(rows.last().unwrap()), display.width());
+        assert!(
+            rows.iter()
+                .all(|line| styled_width(line) <= display.width())
+        );
+        let frame = panel(
+            &rows,
+            NoticePanel {
+                title: "津波情報",
+                status: "現在、津波の発表はありません",
+                alert: false,
+                lines: &[],
+                notes: &["最後の発表 11/06 19:53 JST".into()],
+            },
+            display,
+            &mut 0,
+        );
+        assert!(!frame.text.lines().last().unwrap().contains("スクロール"));
+        if columns > 25 {
+            assert!(frame.text.contains("\x1b[38;2;136;173;182m最後の発表"));
+        }
+    }
+}
+
+#[test]
+fn history_shows_the_date_once_and_fills_intensity_three_or_higher() {
+    let reports = [(0, "01"), (1, "01"), (2, "02")].map(|(level, day)| Report {
+        id: level.to_string(),
+        bulletin: Bulletin {
+            origin: Some(
+                chrono::DateTime::parse_from_rfc3339(&format!("2026-11-{day}T12:30:00+09:00"))
+                    .unwrap(),
+            ),
+            maximum: Some(Level::Known(level)),
+            name: "三陸沖".into(),
+            ..Bulletin::default()
+        },
+    });
+    let lines = history_lines(
+        History {
+            reports: &reports,
+            selected: 2,
+            status: "",
+            row_limit: 10,
+        },
+        60,
+        4,
+        true,
+    );
+    assert!(lines[1].contains("11/01 12:30") && !lines[1].contains("\x1b[48;"));
+    assert!(lines[1].contains("\x1b[38;2;119;213;255m 1  \x1b[0m"));
+    assert!(!lines[2].contains("11/01") && !lines[2].contains("\x1b[48;"));
+    assert!(lines[2].contains("\x1b[38;2;81;227;178m 2  \x1b[0m"));
+    assert!(lines[3].contains("11/02 12:30") && lines[3].contains("\x1b[48;2;244;232;113m"));
+
+    let selected = history_lines(
+        History {
+            reports: &reports,
+            selected: 1,
+            status: "",
+            row_limit: 10,
+        },
+        60,
+        4,
+        true,
+    );
+    assert!(selected[2].starts_with("\x1b[48;2;37;70;87m"));
+    assert!(selected[2].contains("\x1b[38;2;81;227;178m 2  \x1b[0m\x1b[48;2;37;70;87m"));
 }

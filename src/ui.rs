@@ -23,10 +23,10 @@ use crate::{
     },
     eew,
     graphics::{self, Capabilities, Image, KITTY_COMMAND, Map, MapMode},
-    map::{Layer, View},
+    map::{self, Layer, View},
     screen::{
-        self, APP_NAME, Display, Frame, History, MIN_SPLIT_WIDTH, MenuNotice, QuakeNotices,
-        Renderer, Scene,
+        self, APP_NAME, Display, Frame, HelpOverlay, HelpTopic, History, MIN_SPLIT_WIDTH,
+        MenuNotice, QuakeNotices, Renderer, Scene,
     },
     settings::{DEFAULT_HISTORY_ROWS, MAX_HISTORY_ROWS, Settings, StationGrouping},
     tsunami::{self, Validity},
@@ -92,6 +92,10 @@ impl Console {
     }
 
     pub fn paint(&mut self, frame: &Frame) -> io::Result<()> {
+        self.paint_layers(frame, None)
+    }
+
+    fn paint_layers(&mut self, frame: &Frame, overlay: Option<&HelpOverlay>) -> io::Result<()> {
         self.output.clear();
         self.output.push_str("\x1b[?2026h");
         let id = std::process::id();
@@ -105,6 +109,13 @@ impl Console {
         }
         self.sixel_visible = sixel;
         self.output.push_str("\x1b[H");
+        if let Some(overlay) = overlay {
+            if overlay.colors {
+                map::rgb(&mut self.output, (102, 115, 122), false);
+            } else {
+                self.output.push_str("\x1b[2m");
+            }
+        }
         for (i, line) in frame.text.split('\n').enumerate() {
             if i > 0 {
                 self.output.push_str("\x1b[K\r\n");
@@ -112,6 +123,9 @@ impl Console {
             self.output.push_str(line);
         }
         self.output.push_str("\x1b[K\x1b[J");
+        if overlay.is_some() {
+            self.output.push_str("\x1b[0m");
+        }
         if !frame.graphic.is_empty() {
             write!(self.output, "\x1b[{};{}H", frame.map_row, frame.map_col).unwrap();
             if let Some(command) = frame.graphic.strip_prefix(KITTY_COMMAND) {
@@ -120,6 +134,12 @@ impl Console {
             } else {
                 self.output.push_str("\x1b[?80l");
                 self.output.push_str(&frame.graphic);
+            }
+        }
+        if let Some(overlay) = overlay {
+            for (index, line) in overlay.lines.iter().enumerate() {
+                let row = overlay.row + index;
+                write!(self.output, "\x1b[{row};{}H{line}", overlay.column).unwrap();
             }
         }
         self.output.push_str("\x1b[?2026l");
@@ -380,6 +400,33 @@ mod tests {
     }
 
     #[test]
+    fn help_scroll_and_close_preserve_the_underlying_view() {
+        let now = Instant::now();
+        let mut app = App::new(Client::new(), Duration::from_secs(2), false);
+        app.page = Page::Text;
+        app.scroll = 4;
+        app.selection[0] = 2;
+        app.view.zoom_by(2);
+        let zoom = app.view.zoom_factor();
+
+        assert!(app.select(KeyCode::Char('h'), 80, now));
+        assert!(app.select(KeyCode::Down, 80, now));
+        assert_eq!(app.help_scroll, Some(1));
+        assert!(!app.select(KeyCode::Char('2'), 80, now));
+        assert!(app.select(KeyCode::Esc, 80, now));
+        assert!(app.help_scroll.is_none());
+        assert!(app.tab == Tab::Quake && app.page == Page::Text);
+        assert_eq!(app.scroll, 4);
+        assert_eq!(app.selection[0], 2);
+        assert_eq!(app.view.zoom_factor(), zoom);
+
+        app.change_tab(Tab::Settings);
+        assert!(app.select(KeyCode::Char('h'), 80, now));
+        assert!(app.select(KeyCode::Char('H'), 80, now));
+        assert!(app.help_scroll.is_none() && app.tab == Tab::Settings);
+    }
+
+    #[test]
     fn live_eew_alert_changes_refresh_the_quake_menu_and_match_by_id() {
         let now = Instant::now();
         let mut app = App::new(Client::new(), Duration::from_secs(2), false);
@@ -615,6 +662,7 @@ pub struct App {
     incoming: Receiver<Reply>,
     tab: Tab,
     page: Page,
+    help_scroll: Option<usize>,
     selection: [usize; Tab::ALL.len()],
     scroll: usize,
     reading_start: usize,
@@ -646,6 +694,7 @@ impl App {
             incoming,
             tab: Tab::Quake,
             page: Page::Map,
+            help_scroll: None,
             selection: [0; Tab::ALL.len()],
             scroll: 0,
             reading_start: 0,
@@ -726,6 +775,22 @@ impl App {
     }
 
     fn select(&mut self, key: KeyCode, width: usize, now: Instant) -> bool {
+        let help_key = matches!(key, KeyCode::Char('h' | 'H' | 'ｈ' | 'Ｈ' | '?' | '？'));
+        if let Some(scroll) = &mut self.help_scroll {
+            match key {
+                _ if help_key || key == KeyCode::Esc => self.help_scroll = None,
+                KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::Down => *scroll = scroll.saturating_add(1),
+                KeyCode::Home => *scroll = 0,
+                KeyCode::End => *scroll = usize::MAX,
+                _ => return false,
+            }
+            return true;
+        }
+        if help_key {
+            self.help_scroll = Some(0);
+            return true;
+        }
         // Windows IMEs may commit a full-width plus. Numpad plus arrives as '+'.
         let key = match key {
             KeyCode::Char('＋') => KeyCode::Char('+'),
@@ -1089,14 +1154,55 @@ impl App {
         Some((bulletin, banner))
     }
 
+    fn help_topic(&self, width: usize) -> HelpTopic {
+        if self.page == Page::Text {
+            let observations = self
+                .current()
+                .is_some_and(|(bulletin, _)| bulletin.has_observations());
+            return HelpTopic::Details {
+                tab: self.tab.label(),
+                observations,
+            };
+        }
+        match self.tab {
+            Tab::Quake if self.page == Page::List => HelpTopic::QuakeList,
+            Tab::Quake => HelpTopic::QuakeMap {
+                narrow: width < MIN_SPLIT_WIDTH,
+            },
+            Tab::Eew => HelpTopic::Eew {
+                active: self.eew.active().is_some(),
+            },
+            Tab::Tsunami => HelpTopic::Tsunami,
+            Tab::Demo => HelpTopic::Demo {
+                eew: self.demo.frames[self.selection[Tab::Demo.index()]].eew,
+            },
+            Tab::Settings => HelpTopic::Settings,
+            Tab::About => HelpTopic::About,
+        }
+    }
+
     fn paint(
         &mut self,
         renderer: &mut Renderer,
         console: &mut Console,
-        display: Display,
+        mut display: Display,
         settings: &SettingsMenu,
         active_map: Map,
     ) -> Result<()> {
+        if self.page == Page::List && display.width() >= MIN_SPLIT_WIDTH {
+            self.page = Page::Map;
+        }
+        let overlay = self.help_scroll.map(|mut scroll| {
+            let layer = screen::help(self.help_topic(display.width()), display, &mut scroll);
+            self.help_scroll = Some(scroll);
+            display.colors = false;
+            // Image protocols cannot reliably place terminal text over an image.
+            if matches!(display.map, Map::Image(_)) {
+                display.map = Map::Braille;
+            }
+            layer
+        });
+        let mut draw = |frame: &Frame| console.paint_layers(frame, overlay.as_ref());
         let items = Tab::ALL.map(|tab| {
             let bulletin = match tab {
                 Tab::Eew => self.eew.active(),
@@ -1125,7 +1231,7 @@ impl App {
         let menu = screen::menu_lines(&items, display);
         if self.tab == Tab::Settings {
             let rows = format!("{} 行", settings.draft.history_rows);
-            return Ok(console.paint(&screen::settings(
+            return Ok(draw(&screen::settings(
                 &menu,
                 &settings.entries(&rows),
                 settings.field,
@@ -1136,7 +1242,7 @@ impl App {
             ))?);
         }
         if self.tab == Tab::About {
-            return Ok(console.paint(&screen::about(&menu, display, &mut self.scroll))?);
+            return Ok(draw(&screen::about(&menu, display, &mut self.scroll))?);
         }
         if self.tab == Tab::Tsunami {
             let (status, alert, lines) = self.tsunami_display();
@@ -1147,15 +1253,12 @@ impl App {
                     status,
                     alert,
                     lines: &lines,
-                    controls: "R 更新  Q 終了",
+                    actions: &["↑↓ スクロール"],
                 },
                 display,
                 &mut self.scroll,
             );
-            return Ok(console.paint(&frame)?);
-        }
-        if self.page == Page::List && display.width() >= MIN_SPLIT_WIDTH {
-            self.page = Page::Map;
+            return Ok(draw(&frame)?);
         }
         let Some((bulletin, banner)) = self.current() else {
             return Ok(());
@@ -1170,12 +1273,12 @@ impl App {
                     status: &bulletin.label,
                     alert: false,
                     lines: &details,
-                    controls: "Q 終了",
+                    actions: &[],
                 },
                 display,
                 &mut scroll,
             );
-            return Ok(console.paint(&frame)?);
+            return Ok(draw(&frame)?);
         }
         let cached_history = self
             .reports
@@ -1206,7 +1309,7 @@ impl App {
             row_limit: self.history_rows,
         });
         if self.page == Page::List {
-            return Ok(console.paint(&screen::compact(
+            return Ok(draw(&screen::compact(
                 history.expect("earthquake list"),
                 display,
                 &menu,
@@ -1224,64 +1327,22 @@ impl App {
                 &menu,
             );
             self.scroll = scroll;
-            return Ok(console.paint(&frame)?);
+            return Ok(draw(&frame)?);
         }
-        let quake = self.tab == Tab::Quake;
-        let observations = bulletin.has_observations();
-        let has_selection = self.len() > 0;
-        let mut viewing = Vec::new();
-        let (group, navigation) = match self.tab {
+        let actions: &[&str] = match self.tab {
+            Tab::Quake if display.width() < MIN_SPLIT_WIDTH => &["B 履歴", "↑↓ 選択", "Enter 地図"],
+            Tab::Quake => &screen::QUAKE_KEYS,
             Tab::Demo => {
                 let playback = if self.demo.next.is_some() {
-                    "停止"
+                    "Space 停止"
                 } else {
-                    "再生"
+                    "Space 再生"
                 };
-                let mut navigation = vec![("↑↓", "報を選ぶ"), ("Space", playback)];
-                if bulletin.eew {
-                    navigation.extend([("←→", "震度を変更"), ("F", "予報/警報")]);
-                }
-                viewing.push(("R", "デモ初期化"));
-                ("デモ", navigation)
+                &["↑↓ 選択", playback]
             }
-            Tab::Quake => {
-                let mut navigation = vec![("↑↓", "地震を選ぶ")];
-                if display.width() < MIN_SPLIT_WIDTH {
-                    navigation.push(("B", "履歴を開く"));
-                } else {
-                    navigation.push(("←→", "震度一覧をスクロール"));
-                }
-                navigation.push(("Enter", "震源周辺へ"));
-                viewing.push(("R", "情報を更新"));
-                ("地震", navigation)
-            }
-            Tab::Eew => ("EEW", Vec::new()),
-            Tab::Tsunami | Tab::About | Tab::Settings => unreachable!(),
+            _ => &[],
         };
-        let show_layer = quake || observations;
-        if show_layer {
-            viewing.insert(0, ("V", "広域/観測点"));
-        }
-        if quake || has_selection {
-            viewing.insert(usize::from(show_layer), ("I", "詳細を開く"));
-        }
-        viewing.push(("Q", "終了"));
-        let map_controls = [
-            ("WASD", "移動"),
-            ("+/-", "拡大/縮小"),
-            ("Z", "全国/周辺"),
-            ("0", "位置と倍率を戻す"),
-        ];
-        let mut controls = Vec::new();
-        for (heading, bindings) in [
-            (group, navigation.as_slice()),
-            ("表示", viewing.as_slice()),
-            ("地図", &map_controls),
-        ] {
-            if !bindings.is_empty() {
-                controls.extend(screen::control_lines(heading, bindings, display));
-            }
-        }
+        let controls = [screen::footer(actions, display)];
         let series = if self.tab == Tab::Demo {
             &self.demo.frames
         } else {
@@ -1315,10 +1376,12 @@ impl App {
             },
         };
         let frame = renderer.render(scene, display);
-        if let Some(view) = frame.map_view {
+        if overlay.is_none()
+            && let Some(view) = frame.map_view
+        {
             self.view = view;
         }
-        Ok(console.paint(frame)?)
+        Ok(draw(frame)?)
     }
 
     fn quake_notices(&self) -> QuakeNotices {
@@ -1474,7 +1537,8 @@ pub fn run(
                     } else {
                         key.code
                     };
-                    changed |= if app.tab == Tab::Settings
+                    changed |= if app.help_scroll.is_none()
+                        && app.tab == Tab::Settings
                         && settings.handle(code, &mut app, &mut map, &capabilities)
                     {
                         true

@@ -91,6 +91,7 @@ struct WolfxArea {
 
 #[derive(Deserialize)]
 struct WolfxCity {
+    name: Option<String>,
     area: Option<usize>,
     stations: Option<Vec<WolfxStation>>,
 }
@@ -119,21 +120,26 @@ fn observations(observed: &WolfxObservation) -> (Vec<Observation>, Vec<Observati
                 location: None,
                 area_code: area.code.as_deref().unwrap_or_default().into(),
                 prefecture: None,
+                municipality: None,
             })
         })
         .collect();
     let station_sets = areas
         .iter()
-        .map(|area| (Some(area), area.stations.as_deref()))
+        .map(|area| (Some(area), None, area.stations.as_deref()))
         .chain(cities.iter().map(|city| {
             (
                 city.area.and_then(|i| areas.get(i)),
+                city.name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty()),
                 city.stations.as_deref(),
             )
         }));
-    let mut seen = HashSet::new();
-    let mut stations = Vec::new();
-    for (area, points) in station_sets {
+    let mut indices = HashMap::<_, usize>::new();
+    let mut stations = Vec::<Observation>::new();
+    for (area, municipality, points) in station_sets {
         let prefecture = area
             .and_then(|area| area.pref)
             .and_then(|i| prefs.get(i))
@@ -142,24 +148,37 @@ fn observations(observed: &WolfxObservation) -> (Vec<Observation>, Vec<Observati
             .filter(|name| !name.is_empty());
         for station in points.into_iter().flatten() {
             let name = station.name.as_deref().unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
             let code = station
                 .code
                 .as_deref()
                 .filter(|code| !code.is_empty())
                 .unwrap_or(name);
+            if let Some(&index) = indices.get(code) {
+                let existing = &mut stations[index];
+                if existing.municipality.is_none() {
+                    existing.municipality = municipality.map(str::to_owned);
+                }
+                if existing.prefecture.is_none() {
+                    existing.prefecture = prefecture.map(str::to_owned);
+                }
+                continue;
+            }
             let Some(level) = station.int.as_deref().and_then(Level::parse) else {
                 continue;
             };
-            if !name.is_empty() && seen.insert(code) {
-                stations.push(Observation {
-                    name: name.into(),
-                    level,
-                    location: epicenter(&station.longitude, &station.latitude)
-                        .or_else(|| station_location(name)),
-                    area_code: String::new(),
-                    prefecture: prefecture.map(str::to_owned),
-                });
-            }
+            indices.insert(code, stations.len());
+            stations.push(Observation {
+                name: name.into(),
+                level,
+                location: epicenter(&station.longitude, &station.latitude)
+                    .or_else(|| station_location(name)),
+                area_code: String::new(),
+                prefecture: prefecture.map(str::to_owned),
+                municipality: municipality.map(str::to_owned),
+            });
         }
     }
     for rows in [&mut regions, &mut stations] {

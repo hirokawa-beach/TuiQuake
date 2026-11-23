@@ -162,14 +162,27 @@ impl Renderer {
         let mut aside = Vec::new();
         if history.is_none() && !eew_panel {
             if let Some((title, areas)) = &area_entries {
-                aside.push(((*title).into(), if b.warning { ALERT } else { ACCENT }));
+                aside.push(ReadingLine::Text(
+                    (*title).into(),
+                    if b.warning { ALERT } else { ACCENT },
+                ));
                 if warning_missing > 0 {
-                    aside.push((format!("地図にない地域 {warning_missing}件"), MUTED));
+                    aside.push(ReadingLine::Text(
+                        format!("地図にない地域 {warning_missing}件"),
+                        MUTED,
+                    ));
                 }
-                aside.extend(areas.iter().cloned());
+                aside.extend(areas.iter().cloned().map(ReadingLine::from));
             } else if b.has_observations() {
-                aside.push((observation_label(layer).into(), MUTED));
-                aside.extend(readings(b, layer, station_grouping));
+                aside.push(ReadingLine::Text(observation_label(layer).into(), MUTED));
+                let reading_width = if sidebar_width == 0 {
+                    width
+                } else if framed {
+                    sidebar_width - TEXT_FRAME_MARGIN
+                } else {
+                    sidebar_width
+                };
+                aside.extend(readings(b, layer, station_grouping, reading_width));
             }
         }
         let mut legend = Vec::new();
@@ -240,7 +253,7 @@ impl Renderer {
                 &fit(
                     &aside
                         .iter()
-                        .map(|(line, _)| line.as_str())
+                        .map(|line| line.render(width, false))
                         .collect::<Vec<_>>()
                         .join("  /  "),
                     width,
@@ -301,7 +314,7 @@ impl Renderer {
             .saturating_sub(header.len() + footer.len() + map_edges + 1)
             .clamp(1, 60);
         let text_map = self.render_map(b, series, layer, view, display.map, (map_cols, rows));
-        let map_border = Border::new(map_cols + 2, FRAME, display.colors);
+        let map_border = Border::new(map_cols + 2, display.colors);
         let sidebar = if sidebar_width == 0 {
             Vec::new()
         } else if eew_panel {
@@ -344,7 +357,7 @@ impl Renderer {
         } else {
             let title = aside
                 .first()
-                .map(|(label, _)| label.clone())
+                .map(|line| line.render(sidebar_width, false))
                 .unwrap_or_default();
             let capacity = rows;
             if framed && !aside.is_empty() {
@@ -353,7 +366,7 @@ impl Renderer {
             if aside.len() > capacity {
                 let omitted = aside.len() - capacity + 1;
                 aside.truncate(capacity - 1);
-                aside.push((format!("ほか {omitted} 件"), MUTED));
+                aside.push(ReadingLine::Text(format!("ほか {omitted} 件"), MUTED));
             }
             if framed && aside.is_empty() && title.is_empty() {
                 Vec::new()
@@ -361,11 +374,14 @@ impl Renderer {
                 let inner = sidebar_width - if framed { TEXT_FRAME_MARGIN } else { 0 };
                 let lines = aside
                     .into_iter()
-                    .map(|(line, rgb)| color(&fit(&line, inner), rgb, display.colors))
+                    .map(|line| line.render(inner, display.colors))
                     .collect();
                 if framed {
-                    let tone = if b.warning { FRAME_ALERT } else { FRAME };
-                    Border::new(sidebar_width, tone, display.colors).text(lines, &title, rows + 2)
+                    Border::notice(sidebar_width, display.colors, b.warning).text(
+                        lines,
+                        &title,
+                        rows + 2,
+                    )
                 } else {
                     lines
                 }

@@ -20,7 +20,7 @@ const ACCENT: map::Rgb = (125, 213, 210);
 const ALERT: map::Rgb = (255, 175, 97);
 const FORECAST_INK: Rgb = (255, 222, 94);
 const WARNING_INK: Rgb = (255, 97, 98);
-const FRAME: map::Rgb = (72, 139, 148);
+const FRAME: Rgb = (71, 100, 108);
 const FRAME_ALERT: map::Rgb = (177, 125, 79);
 const PANEL_GAP: usize = 1;
 const TEXT_FRAME_MARGIN: usize = 4;
@@ -155,12 +155,30 @@ fn color(value: &str, rgb: map::Rgb, ansi: bool) -> String {
 struct Border {
     width: usize,
     rgb: Rgb,
+    title_rgb: Rgb,
     ansi: bool,
 }
 
 impl Border {
-    fn new(width: usize, rgb: Rgb, ansi: bool) -> Self {
-        Self { width, rgb, ansi }
+    fn new(width: usize, ansi: bool) -> Self {
+        Self {
+            width,
+            rgb: FRAME,
+            title_rgb: INK,
+            ansi,
+        }
+    }
+
+    fn notice(width: usize, ansi: bool, alert: bool) -> Self {
+        if alert {
+            Self {
+                rgb: FRAME_ALERT,
+                title_rgb: ALERT,
+                ..Self::new(width, ansi)
+            }
+        } else {
+            Self::new(width, ansi)
+        }
     }
 
     fn edge(self) -> String {
@@ -170,15 +188,7 @@ impl Border {
     fn top(self, title: &str) -> String {
         let title = fit(title, self.width.saturating_sub(6));
         let rest = "─".repeat(self.width - 5 - title.width());
-        let title = color(
-            &title,
-            if self.rgb == FRAME_ALERT {
-                ALERT
-            } else {
-                ACCENT
-            },
-            self.ansi,
-        );
+        let title = color(&title, self.title_rgb, self.ansi);
         format!(
             "{}{title}{}",
             color("╭─ ", self.rgb, self.ansi),
@@ -391,34 +401,31 @@ fn station_groups(b: &Bulletin, grouping: StationGrouping) -> Vec<(&str, Vec<&Ob
     groups
 }
 
-fn station_heading(label: &str, first: &Observation, grouping: StationGrouping) -> (String, Rgb) {
-    match grouping {
-        StationGrouping::Prefecture => (format!("── {label}"), ACCENT),
-        StationGrouping::Intensity if first.level.index().is_some() => {
-            (format!("── 震度 {label}"), reading_rgb(&first.level))
+fn prefecture_heading(prefecture: &str) -> ReadingLine {
+    ReadingLine::Text(format!("── {prefecture}"), MUTED)
+}
+
+fn readings(
+    b: &Bulletin,
+    layer: Layer,
+    grouping: StationGrouping,
+    width: usize,
+) -> Vec<ReadingLine> {
+    match (layer, grouping) {
+        (Layer::Regions, _) => b
+            .regions
+            .iter()
+            .map(reading_row)
+            .map(ReadingLine::from)
+            .collect(),
+        (Layer::Stations, StationGrouping::Intensity) => {
+            intensity_readings(b, width, 0, usize::MAX).2
         }
-        StationGrouping::Intensity => (format!("── {label}"), MUTED),
-    }
-}
-
-fn station_reading_row(station: &Observation, grouping: StationGrouping) -> (String, Rgb) {
-    match grouping {
-        StationGrouping::Prefecture => reading_row(station),
-        StationGrouping::Intensity => (station.name.clone(), INK),
-    }
-}
-
-fn readings(b: &Bulletin, layer: Layer, grouping: StationGrouping) -> Vec<(String, Rgb)> {
-    match layer {
-        Layer::Regions => b.regions.iter().map(reading_row).collect(),
-        Layer::Stations => station_groups(b, grouping)
+        (Layer::Stations, StationGrouping::Prefecture) => station_groups(b, grouping)
             .into_iter()
             .flat_map(|(label, stations)| {
-                std::iter::once(station_heading(label, stations[0], grouping)).chain(
-                    stations
-                        .into_iter()
-                        .map(|station| station_reading_row(station, grouping)),
-                )
+                std::iter::once(prefecture_heading(label))
+                    .chain(stations.into_iter().map(reading_row).map(ReadingLine::from))
             })
             .collect(),
     }
@@ -429,20 +436,35 @@ fn station_readings_window(
     grouping: StationGrouping,
     start: usize,
     slots: usize,
-) -> (String, Vec<(String, Rgb)>) {
+    width: usize,
+) -> (String, Vec<ReadingLine>) {
+    let (title, start, shown, rows) = match grouping {
+        StationGrouping::Intensity => {
+            let (start, shown, rows) = intensity_readings(b, width, start, slots);
+            ("観測点 · 震度別", start, shown, rows)
+        }
+        StationGrouping::Prefecture => {
+            let (start, shown, rows) = prefecture_window(b, start, slots);
+            ("各地の震度 · 観測点", start, shown, rows)
+        }
+    };
+    let mut title = title.to_owned();
     let count = b.stations.len();
-    let groups = station_groups(b, grouping);
+    if shown != 0 && shown < count {
+        write!(title, "  {}–{}/{count}", start + 1, start + shown).unwrap();
+    }
+    (title, rows)
+}
+
+fn prefecture_window(b: &Bulletin, start: usize, slots: usize) -> (usize, usize, Vec<ReadingLine>) {
+    let count = b.stations.len();
+    let groups = station_groups(b, StationGrouping::Prefecture);
     let start = if count + groups.len() <= slots {
         0
     } else {
         start.min(count.saturating_sub(1))
     };
     let mut skip = start;
-    let mut title = match grouping {
-        StationGrouping::Prefecture => "各地の震度 · 観測点",
-        StationGrouping::Intensity => "観測点 · 震度別",
-    }
-    .to_owned();
     let mut rows = Vec::new();
     let mut shown = 0;
     for (label, stations) in groups {
@@ -453,16 +475,24 @@ fn station_readings_window(
         if slots - rows.len() < 2 {
             break;
         }
-        rows.push(station_heading(label, stations[skip], grouping));
+        rows.push(prefecture_heading(label));
         let visible = stations.into_iter().skip(skip).take(slots - rows.len());
         shown += visible.len();
-        rows.extend(visible.map(|station| station_reading_row(station, grouping)));
+        rows.extend(visible.map(reading_row).map(ReadingLine::from));
         skip = 0;
     }
-    if shown < count {
-        write!(title, "  {}–{}/{count}", start + 1, start + shown).unwrap();
-    }
-    (title, rows)
+    (start, shown, rows)
+}
+
+fn section_heading(title: &str, width: usize, ansi: bool) -> String {
+    let title = fit(title, width - 4);
+    let rule = "─".repeat(width - 4 - title.width());
+    format!(
+        "{}{} {}",
+        color("── ", FRAME, ansi),
+        color(&title, INK, ansi),
+        color(&rule, FRAME, ansi),
+    )
 }
 
 impl History<'_> {
@@ -475,29 +505,26 @@ impl History<'_> {
     }
 
     fn target_height(&self) -> usize {
-        self.row_limit + 3
+        self.row_limit + 2
     }
 
-    fn frame(self, border: Border, height: usize) -> Vec<String> {
+    fn section(self, width: usize, height: usize, ansi: bool) -> Vec<String> {
         let height = height.min(self.target_height());
         let mut title = self.title();
-        if height == 3 && !self.reports.is_empty() && !self.status.is_empty() {
+        if height <= 2 && !self.reports.is_empty() && !self.status.is_empty() {
             write!(title, " · {}", self.status).unwrap();
         }
-        let lines = history_lines(
-            self,
-            border.width - TEXT_FRAME_MARGIN,
-            height - 2,
-            border.ansi,
-        );
-        border.text(lines, &title, height)
+        let mut lines = vec![section_heading(&title, width, ansi)];
+        lines.extend(history_lines(self, width, height - 1, ansi));
+        lines.resize_with(height, String::new);
+        lines
     }
 
-    fn bottom_frame(self, border: Border, height: usize) -> Vec<String> {
-        let panel = self.frame(border, height);
+    fn bottom_section(self, width: usize, height: usize, ansi: bool) -> Vec<String> {
+        let section = self.section(width, height, ansi);
         std::iter::repeat_with(String::new)
-            .take(height - panel.len())
-            .chain(panel)
+            .take(height - section.len())
+            .chain(section)
             .collect()
     }
 }
@@ -516,10 +543,14 @@ fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) ->
     if reports.is_empty() {
         return out;
     }
-    let date_width = if width >= 29 { 11 } else { 5 };
+    const MAG_WIDTH: usize = 5;
+    const DEPTH_WIDTH: usize = 7;
+    let date_width = if width >= 36 { 11 } else { 5 };
     let show_mag = width >= 40;
+    let show_depth = width >= 26;
     let header = format!(
-        "  {} 震度 {}震源地",
+        "{}{} 震度 {}{}震源地",
+        if ansi { "" } else { "  " },
         pad(
             if date_width == 11 {
                 "発生 JST"
@@ -528,7 +559,16 @@ fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) ->
             },
             date_width
         ),
-        if show_mag { "M     " } else { "" }
+        if show_mag {
+            pad("M", MAG_WIDTH)
+        } else {
+            String::new()
+        },
+        if show_depth {
+            pad("深さ", DEPTH_WIDTH)
+        } else {
+            String::new()
+        },
     );
     if rows > out.len() + 1 {
         out.push(color(&fit(&header, width), MUTED, ansi));
@@ -551,22 +591,33 @@ fn history_lines(history: History<'_>, width: usize, rows: usize, ansi: bool) ->
             })
             .unwrap_or_default();
         let magnitude = if show_mag {
-            pad(&item.magnitude, 6)
+            format!("{} ", pad(&item.magnitude, MAG_WIDTH - 1))
+        } else {
+            String::new()
+        };
+        let depth = if show_depth {
+            let label = item
+                .depth
+                .map_or_else(|| "—".into(), |km| format!("{km}km"));
+            pad(&label, DEPTH_WIDTH)
         } else {
             String::new()
         };
         let level = item.maximum.as_ref();
         let selected = index == selected;
-        let prefix = format!(
-            "{} {} ",
-            if selected { '>' } else { ' ' },
-            pad(&date, date_width),
-        );
+        let cursor = if ansi {
+            ""
+        } else if selected {
+            "> "
+        } else {
+            "  "
+        };
+        let prefix = format!("{cursor}{} ", pad(&date, date_width));
         let intensity = fit(level.map_or("—", short_intensity_label), 4);
         let left = (4 - intensity.width()) / 2;
         let cell = pad(&format!("{}{intensity}", " ".repeat(left)), 4);
         let suffix = format!(
-            " {magnitude}{}",
+            " {magnitude}{depth}{}",
             if item.name.is_empty() {
                 "震源地不明"
             } else {
@@ -630,11 +681,11 @@ fn badge_ink((r, g, b): Rgb) -> Rgb {
     }
 }
 
-pub fn control_lines(heading: &str, bindings: &[(&str, &str)], display: Display) -> Vec<String> {
+fn control_lines(heading: &str, bindings: &[(&str, &str)], display: Display) -> Vec<String> {
     let width = display.width();
     let heading = format!("{heading}  ");
     let indent = heading.width();
-    let mut line = color(&heading, MUTED, display.colors);
+    let mut line = heading;
     let mut used = indent;
     let mut has_item = false;
     let mut lines = Vec::new();
@@ -643,7 +694,8 @@ pub fn control_lines(heading: &str, bindings: &[(&str, &str)], display: Display)
         let item_width = key.width() + 1 + action.width();
         let separator = if has_item { "  " } else { "" };
         if used + separator.len() + item_width > width {
-            lines.push(std::mem::take(&mut line));
+            lines.push(color(&line, MUTED, display.colors));
+            line.clear();
             used = if indent + item_width <= width {
                 indent
             } else {
@@ -655,44 +707,45 @@ pub fn control_lines(heading: &str, bindings: &[(&str, &str)], display: Display)
             used += separator.len();
         }
         let action = fit(action, width.saturating_sub(used + key.width() + 1));
-        write!(
-            line,
-            "{} {}",
-            color(&key, ACCENT, display.colors),
-            color(&action, INK, display.colors),
-        )
-        .unwrap();
+        write!(line, "{key} {action}").unwrap();
         used += key.width() + 1 + action.width();
         has_item = true;
     }
-    lines.push(line);
+    lines.push(color(&line, MUTED, display.colors));
     lines
+}
+
+pub const QUAKE_KEYS: [&str; 2] = ["↑↓ 選択", "Enter 地図"];
+
+pub fn footer(actions: &[&str], display: Display) -> String {
+    let width = display.width();
+    let full = "H ヘルプ  Q 終了";
+    let tail = if full.width() <= width {
+        full
+    } else {
+        "H ヘルプ  Q"
+    };
+    let mut line = String::new();
+    let mut remaining = width - tail.width();
+    for action in actions {
+        let used = action.width() + 2;
+        if used <= remaining {
+            write!(line, "{action}  ").unwrap();
+            remaining -= used;
+        }
+    }
+    line.push_str(tail);
+    color(&line, MUTED, display.colors)
 }
 
 pub fn compact(history: History<'_>, display: Display, menu: &[String]) -> Frame {
     let mut list = menu.to_vec();
-    let controls = control_lines(
-        "履歴",
-        &[
-            ("↑↓", "地震を選ぶ"),
-            ("Enter", "地図"),
-            ("I", "詳細"),
-            ("R", "更新"),
-            ("Q", "終了"),
-        ],
-        display,
-    );
-    let border = Border::new(display.width(), FRAME, display.colors);
-    list.extend(
-        history.frame(
-            border,
-            display
-                .rows
-                .saturating_sub(menu.len() + controls.len())
-                .max(3),
-        ),
-    );
-    list.extend(controls);
+    list.extend(history.section(
+        display.width(),
+        display.rows.saturating_sub(menu.len() + 1).max(2),
+        display.colors,
+    ));
+    list.push(footer(&QUAKE_KEYS, display));
     Frame {
         text: list.join("\n"),
         ..Frame::default()
@@ -704,7 +757,7 @@ pub struct NoticePanel<'a> {
     pub status: &'a str,
     pub alert: bool,
     pub lines: &'a [String],
-    pub controls: &'a str,
+    pub actions: &'a [&'a str],
 }
 
 pub fn panel(
@@ -718,7 +771,7 @@ pub fn panel(
         status,
         alert,
         lines,
-        controls,
+        actions,
     } = notice;
     let width = display.width();
     let inner = width - TEXT_FRAME_MARGIN;
@@ -732,25 +785,18 @@ pub fn panel(
     *scroll = (*scroll).min(rows.len().saturating_sub(capacity));
     content.extend(rows.iter().skip(*scroll).take(capacity).cloned());
     let height = content.len() + 2;
-    text.extend(
-        Border::new(
-            width,
-            if alert { FRAME_ALERT } else { FRAME },
-            display.colors,
-        )
-        .text(content, title, height),
-    );
-    let keys = if capacity > 0 && rows.len() > capacity {
+    let title = if capacity > 0 && rows.len() > capacity {
         format!(
-            "↑↓ スクロール  {}–{}/{}  {controls}",
+            "{title}  {}–{}/{}",
             *scroll + 1,
             *scroll + capacity,
             rows.len()
         )
     } else {
-        controls.into()
+        title.to_owned()
     };
-    text.push(fit(&keys, width));
+    text.extend(Border::notice(width, display.colors, alert).text(content, &title, height));
+    text.push(footer(actions, display));
     Frame {
         text: text.join("\n"),
         ..Frame::default()
@@ -770,21 +816,11 @@ pub fn settings(
     let inner = width - TEXT_FRAME_MARGIN;
     let on_save = selected == entries.len();
     let value_key = if on_save {
-        ("Enter", "保存して適用")
+        "Enter 保存"
     } else {
-        ("←→", "値を変更")
+        "←→ 変更"
     };
-    let back = if dirty {
-        "変更を破棄して戻る"
-    } else {
-        "戻る"
-    };
-    let controls = control_lines(
-        "操作",
-        &[("↑↓", "選ぶ"), value_key, ("S", "保存"), ("Esc", back)],
-        display,
-    );
-    let capacity = display.rows.saturating_sub(menu.len() + controls.len() + 2);
+    let capacity = display.rows.saturating_sub(menu.len() + 3);
     let row_count = capacity.min(entries.len() + 1);
     let start = (selected + 1).saturating_sub(row_count);
     let mut rows = Vec::new();
@@ -836,8 +872,8 @@ pub fn settings(
     };
     let height = rows.len() + 2;
     let mut text = menu.to_vec();
-    text.extend(Border::new(width, FRAME, display.colors).text(rows, title, height));
-    text.extend(controls);
+    text.extend(Border::new(width, display.colors).text(rows, title, height));
+    text.push(footer(&["↑↓ 選択", value_key], display));
     Frame {
         text: text.join("\n"),
         ..Frame::default()
@@ -871,51 +907,41 @@ pub struct MenuItem<'a> {
 
 pub fn menu_lines(items: &[MenuItem<'_>], display: Display) -> Vec<String> {
     let width = display.width();
-    let inner = width - TEXT_FRAME_MARGIN;
-    let border = Border::new(width, FRAME, display.colors);
-    let divider = color("│", FRAME, display.colors);
     let mut rows = Vec::new();
-    let mut line = String::new();
-    let mut used = 0;
+    let mut line = color(APP_NAME, INK, display.colors);
+    let mut used = APP_NAME.width();
     for item in items {
-        let prefix = format!("{}{}", if item.active { '▸' } else { ' ' }, item.key);
-        let label = fit(&format!(" {} ", item.label), inner - prefix.width());
-        let item_width = prefix.width() + label.width();
-        if used > 0 && used + 1 + item_width > inner {
+        let marked = item.active && !display.colors;
+        let mut label = fit(
+            &format!("{} {}", item.key, item.label),
+            width - if marked { 2 } else { 0 },
+        );
+        if marked {
+            label = format!("[{label}]");
+        }
+        let item_width = label.width();
+        if used + 2 + item_width > width {
             rows.push(std::mem::take(&mut line));
             used = 0;
         }
         if used > 0 {
-            line.push_str(&divider);
-            used += 1;
+            line.push_str("  ");
+            used += 2;
         }
-        let alert_ink = item.notice.map(|notice| match notice {
-            MenuNotice::Forecast => FORECAST_INK,
-            MenuNotice::Warning => WARNING_INK,
-        });
-        if item.active {
-            if display.colors {
-                map::rgb(&mut line, SELECTED, true);
-            }
-            line.push_str(&color(
-                &format!("{prefix}{label}"),
-                alert_ink.unwrap_or(INK),
-                display.colors,
-            ));
-        } else {
-            line.push_str(&color(&prefix, alert_ink.unwrap_or(ACCENT), display.colors));
-            line.push_str(&color(&label, alert_ink.unwrap_or(MUTED), display.colors));
+        let ink = match item.notice {
+            Some(MenuNotice::Forecast) => FORECAST_INK,
+            Some(MenuNotice::Warning) => WARNING_INK,
+            None if item.active => INK,
+            None => MUTED,
+        };
+        if item.active && display.colors {
+            map::rgb(&mut line, SELECTED, true);
         }
+        line.push_str(&color(&label, ink, display.colors));
         used += item_width;
     }
-    let hint = "Tab / Shift+Tab";
-    if rows.is_empty() && used + 2 + hint.width() <= inner {
-        line.push_str(&" ".repeat(inner - used - hint.width()));
-        line.push_str(&color(hint, MUTED, display.colors));
-    }
     rows.push(line);
-    let height = rows.len() + 2;
-    border.text(rows, APP_NAME, height)
+    rows
 }
 
 fn color_logo(text: &str, split: usize, cyan: Rgb, amber: Rgb, ansi: bool) -> String {
@@ -950,12 +976,18 @@ pub fn map_picker(options: &[Map], selected: usize, display: Display) -> Frame {
         .map(|(index, &map)| {
             let active = index == selected;
             let marker = if active { "▸" } else { " " };
-            let label = if map == Map::Braille && inner < 22 {
-                "Braille"
+            let prefix = format!("{marker} [{}] ", index + 1);
+            let available = inner.saturating_sub(prefix.width());
+            let label = if map == Map::Braille && available < map.label().width() {
+                let short = "Braille 非推奨";
+                if available >= short.width() {
+                    short
+                } else {
+                    "Braille"
+                }
             } else {
                 map.label()
             };
-            let prefix = format!("{marker} [{}] ", index + 1);
             let foreground = if active { INK } else { ACCENT };
             let mut line = String::new();
             if display.colors && active {
@@ -968,17 +1000,14 @@ pub fn map_picker(options: &[Map], selected: usize, display: Display) -> Frame {
             if display.colors {
                 map::rgb(&mut line, INK, false);
             }
-            let name_width = if descriptions {
-                18
-            } else {
-                inner.saturating_sub(prefix.width())
-            };
+            let describe = descriptions && map != Map::Braille;
+            let name_width = if describe { 18 } else { available };
             line.push_str(&pad(label, name_width));
-            if descriptions {
-                let note = match map {
-                    Map::Image(_) => "画像で地図を描画",
-                    Map::Braille => "点字で地図を描画  ⣠⣴⣿⠟",
-                    Map::Text => "文字で地図を描画",
+            if describe {
+                let note = if map.image().is_some() {
+                    "画像で地図を描画"
+                } else {
+                    "文字で地図を描画"
                 };
                 if display.colors && !active {
                     map::rgb(&mut line, MUTED, false);
@@ -998,7 +1027,7 @@ pub fn map_picker(options: &[Map], selected: usize, display: Display) -> Frame {
             rows.push(String::new());
         }
         let height = rows.len() + 2;
-        Border::new(width, FRAME, display.colors).text(rows, "地図の描画方式", height)
+        Border::new(width, display.colors).text(rows, "地図の描画方式", height)
     } else {
         let start = selected.saturating_add(1).saturating_sub(display.rows);
         rows.into_iter().skip(start).take(display.rows).collect()
@@ -1063,17 +1092,7 @@ pub fn map_picker(options: &[Map], selected: usize, display: Display) -> Frame {
 pub fn about(menu: &[String], display: Display, scroll: &mut usize) -> Frame {
     let width = display.width();
     let inner = width - TEXT_FRAME_MARGIN;
-    let controls = control_lines(
-        "About",
-        &[
-            ("↑↓", "スクロール"),
-            ("Home/End", "先頭/末尾"),
-            ("Esc", "地震へ"),
-            ("Q", "終了"),
-        ],
-        display,
-    );
-    let capacity = display.rows.saturating_sub(menu.len() + controls.len() + 2);
+    let capacity = display.rows.saturating_sub(menu.len() + 3);
     let version = concat!("v", env!("CARGO_PKG_VERSION"));
     let logo_width = LOGO.iter().map(|row| row.len()).max().unwrap_or(0);
     let mut content = Vec::new();
@@ -1109,14 +1128,6 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize) -> Frame {
             &[
                 &renderer,
                 "Sixel / Kitty は画像で、Unicode Braille と文字地図は文字で描きます。",
-            ],
-        ),
-        (
-            "主な操作",
-            &[
-                "↑↓ 地震を選ぶ  V 広域/観測点  I 詳細",
-                "WASD 地図を移動  +/- 拡大/縮小  Z 全国/周辺  0 表示を戻す",
-                "デモ  ←→ 震度変更  F 予報/警報  Space 再生・停止",
             ],
         ),
         (
@@ -1157,19 +1168,23 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize) -> Frame {
     let visible = content.into_iter().skip(*scroll).take(capacity).collect();
     let height = end - *scroll + 2;
     let mut rows = menu.to_vec();
-    rows.extend(Border::new(width, FRAME, display.colors).text(visible, &title, height));
-    rows.extend(controls);
+    rows.extend(Border::new(width, display.colors).text(visible, &title, height));
+    rows.push(footer(&["↑↓ スクロール"], display));
     Frame {
         text: rows.join("\n"),
         ..Frame::default()
     }
 }
 
+mod help;
 mod panels;
 mod raster;
 mod render;
+mod stations;
 #[cfg(test)]
 mod tests;
 
+pub use help::{HelpOverlay, HelpTopic, help};
 pub use panels::detail;
 pub use render::Renderer;
+use stations::{ReadingLine, intensity_readings};

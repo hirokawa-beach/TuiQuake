@@ -85,6 +85,7 @@ pub struct Observation {
     pub location: Option<Location>,
     pub area_code: String,
     pub prefecture: Option<String>,
+    pub municipality: Option<String>,
 }
 
 pub type Stamp = DateTime<FixedOffset>;
@@ -487,6 +488,11 @@ pub fn demo() -> Vec<Bulletin> {
         location: Location::new(lon, lat),
         area_code: String::new(),
         prefecture: Some(prefecture.into()),
+        municipality: Some(if name == "南三陸" {
+            "南三陸町".into()
+        } else {
+            format!("{name}市")
+        }),
     })
     .collect();
     actual.regions = [
@@ -507,6 +513,7 @@ pub fn demo() -> Vec<Bulletin> {
         location: None,
         area_code: code.into(),
         prefecture: None,
+        municipality: None,
     })
     .collect();
     vec![first, second, actual]
@@ -542,6 +549,10 @@ mod tests {
         assert_eq!(history.len(), 1);
         let bulletin = &history[0].bulletin;
         assert_eq!(bulletin.name, "トカラ列島近海");
+        assert_eq!(
+            bulletin.stations[0].municipality.as_deref(),
+            Some("鹿児島十島村")
+        );
         assert!(
             bulletin
                 .stations
@@ -611,13 +622,20 @@ mod tests {
                     {"pref":1}
                 ],
                 "cities": [
-                    {"area":0, "stations":[{"code":"1", "name":"大船渡", "int":"3"}]},
+                    {"area":0,"name":"大船渡市","stations":[{"code":"1", "name":"大船渡", "int":"3"}]},
                     {"area":1, "stations":[{"code":"2", "name":"石巻", "int":"4"}]},
                     {"area":9, "stations":[{"code":"3", "name":"区域不明の観測点", "int":"2"}]}
                 ]
             }}]
         }))
         .unwrap();
+        let duplicated = report
+            .bulletin
+            .stations
+            .iter()
+            .find(|station| station.name == "大船渡")
+            .unwrap();
+        assert_eq!(duplicated.municipality.as_deref(), Some("大船渡市"));
         let prefectures: Vec<_> = report
             .bulletin
             .stations

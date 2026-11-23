@@ -106,23 +106,23 @@ pub(super) fn earthquake_sidebar(
         reading_start: start,
         ..
     } = *scene;
-    let border = Border::new(width, FRAME, ansi);
     const MIN_HISTORY: usize = 3;
-    if rows < MIN_HISTORY + 7 {
-        return history.bottom_frame(border, rows);
+    let min_readings =
+        3 + usize::from(layer == Layer::Stations && grouping == StationGrouping::Intensity);
+    if rows < MIN_HISTORY + min_readings + 2 {
+        return history.bottom_section(width, rows, ansi);
     }
 
-    let inner = width - TEXT_FRAME_MARGIN;
-    let summary_rows = (rows - MIN_HISTORY - 6).min(8);
-    let facts = earthquake_summary(b, notices, inner, summary_rows, ansi);
-    let summary_height = summary_rows + 2;
-    let mut lines = border.text(facts, "地震の概要", summary_height);
+    let summary_rows = (rows - MIN_HISTORY - min_readings - 1).min(8);
+    let mut lines = vec![section_heading("地震の概要", width, ansi)];
+    lines.extend(earthquake_summary(b, notices, width, summary_rows, ansi));
+    lines.resize_with(1 + summary_rows, String::new);
 
-    let shared_rows = rows - summary_height - 2;
-    let history_height = history.target_height().min(shared_rows - 2);
-    let slots = shared_rows - history_height;
+    let remaining = rows - lines.len();
+    let history_height = history.target_height().min(remaining - min_readings);
+    let slots = remaining - history_height - 1;
     let (title, entries) = match layer {
-        Layer::Stations => station_readings_window(b, grouping, start, slots),
+        Layer::Stations => station_readings_window(b, grouping, start, slots, width),
         Layer::Regions => {
             let count = b.regions.len();
             let start = if count <= slots {
@@ -137,21 +137,22 @@ pub(super) fn earthquake_sidebar(
             }
             (
                 title,
-                b.regions[start..end].iter().map(reading_row).collect(),
+                b.regions[start..end]
+                    .iter()
+                    .map(reading_row)
+                    .map(ReadingLine::from)
+                    .collect(),
             )
         }
     };
-    let readings = if entries.is_empty() {
-        vec![color(&fit("震度データなし", inner), MUTED, ansi)]
+    lines.push(section_heading(&title, width, ansi));
+    if entries.is_empty() {
+        lines.push(color(&fit("震度データなし", width), MUTED, ansi));
     } else {
-        entries
-            .iter()
-            .map(|(line, rgb)| color(&fit(line, inner), *rgb, ansi))
-            .collect()
-    };
-    let readings_height = slots + 2;
-    lines.extend(Border::new(width, FRAME_ALERT, ansi).text(readings, &title, readings_height));
-    lines.extend(history.frame(border, history_height));
+        lines.extend(entries.iter().map(|line| line.render(width, ansi)));
+    }
+    lines.resize_with(rows - history_height, String::new);
+    lines.extend(history.section(width, history_height, ansi));
     lines
 }
 
@@ -326,8 +327,7 @@ pub(super) fn eew_overview(
     } else {
         "速報概要".into()
     };
-    Border::new(width, if b.warning { FRAME_ALERT } else { FRAME }, ansi)
-        .text(content, &title, used)
+    Border::notice(width, ansi, b.warning).text(content, &title, used)
 }
 
 pub(super) fn eew_area_entries(b: &Bulletin) -> Option<(&'static str, Vec<(String, Rgb)>)> {
@@ -424,8 +424,7 @@ pub(super) fn eew_area_panel(
     } else {
         title.to_owned()
     };
-    Border::new(width, if warning { FRAME_ALERT } else { FRAME }, ansi)
-        .text(content, &title, height)
+    Border::notice(width, ansi, warning).text(content, &title, height)
 }
 
 pub fn detail(
@@ -448,64 +447,58 @@ pub fn detail(
     while !comment.is_empty() {
         let line = fit(&comment, inner);
         comment.drain(..line.len());
-        rows.push((line, INK));
+        rows.push(ReadingLine::Text(line, INK));
     }
     if !rows.is_empty() {
-        rows.push((String::new(), INK));
+        rows.push(ReadingLine::Text(String::new(), INK));
     }
     if let Some((title, areas)) = eew_area_entries(b) {
-        rows.push((
+        rows.push(ReadingLine::Text(
             format!("{title}  {} 地域", areas.len()),
             if b.warning { ALERT } else { ACCENT },
         ));
-        rows.extend(areas);
+        rows.extend(areas.into_iter().map(ReadingLine::from));
     } else if b.has_observations() {
         let count = match layer {
             Layer::Regions => b.regions.len(),
             Layer::Stations => b.stations.len(),
         };
-        rows.push((format!("{}  {count} 件", observation_label(layer)), MUTED));
+        rows.push(ReadingLine::Text(
+            format!("{}  {count} 件", observation_label(layer)),
+            MUTED,
+        ));
         if layer == Layer::Stations && grouping == StationGrouping::Intensity {
             intensity_rows_start = Some(rows.len());
         }
-        rows.extend(readings(b, layer, grouping));
+        rows.extend(readings(b, layer, grouping, inner));
     }
-    let mut actions = vec![("↑↓", "スクロール"), ("I/B", "地図へ戻る")];
-    if b.has_observations() {
-        actions.push(("V", "広域/観測点"));
-    }
-    actions.push(("Q", "終了"));
-    let controls = control_lines("詳細", &actions, display);
     let mut capacity = display
         .rows
-        .saturating_sub(header.len() + content.len() + controls.len() + 3);
+        .saturating_sub(header.len() + content.len() + 4);
     let separator = capacity > 1 && !rows.is_empty();
     capacity -= usize::from(separator);
     *scroll = (*scroll).min(rows.len().saturating_sub(capacity));
     if separator {
         let continuation = intensity_rows_start
-            .filter(|start| *scroll > *start && !rows[*scroll].0.starts_with("── "))
+            .filter(|start| {
+                *scroll > *start && !matches!(rows[*scroll], ReadingLine::Intensity { .. })
+            })
             .and_then(|start| {
                 rows[start..*scroll]
                     .iter()
-                    .rfind(|(line, _)| line.starts_with("── "))
+                    .rfind(|line| matches!(line, ReadingLine::Intensity { .. }))
             });
-        content.push(continuation.map_or_else(String::new, |(line, rgb)| {
-            color(&fit(line, inner), *rgb, display.colors)
-        }));
+        content
+            .push(continuation.map_or_else(String::new, |line| line.render(inner, display.colors)));
     }
     content.extend(
         rows.iter()
             .skip(*scroll)
             .take(capacity)
-            .map(|(line, rgb)| color(&fit(line, inner), *rgb, display.colors)),
+            .map(|line| line.render(inner, display.colors)),
     );
     let height = content.len() + 2;
-    let border = Border::new(
-        width,
-        if b.warning { FRAME_ALERT } else { FRAME },
-        display.colors,
-    );
+    let border = Border::notice(width, display.colors, b.warning);
     header.extend(border.text(content, &format!("文字詳細 · {banner}"), height));
     if capacity > 0 && rows.len() > capacity {
         header.push(color(
@@ -517,7 +510,7 @@ pub fn detail(
             display.colors,
         ));
     }
-    header.extend(controls);
+    header.push(footer(&["↑↓ スクロール", "I 地図"], display));
     Frame {
         text: header.join("\n"),
         ..Frame::default()

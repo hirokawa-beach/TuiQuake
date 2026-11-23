@@ -7,21 +7,22 @@ fn reading_names_start_in_the_same_column_at_every_intensity() {
     bulletin.regions[0].level = Level::Known(4);
     bulletin.regions[1].level = Level::Known(3);
     bulletin.regions[2].level = Level::Other("5弱以上・未入電".into());
-    let lines = readings(&bulletin, Layer::Regions, StationGrouping::Prefecture);
-    assert!(lines[0].0.starts_with("5-  "));
-    assert!(lines[1].0.starts_with(" 4  "));
-    assert!(lines[2].0.starts_with(" —  "));
-    assert!(lines[2].0.ends_with("（5弱以上・未入電）"));
+    let rows = readings(&bulletin, Layer::Regions, StationGrouping::Prefecture, 70);
+    let lines: Vec<_> = rows.iter().map(|row| row.render(70, false)).collect();
+    assert!(lines[0].starts_with("5-  "));
+    assert!(lines[1].starts_with(" 4  "));
+    assert!(lines[2].starts_with(" —  "));
+    assert!(lines[2].ends_with("（5弱以上・未入電）"));
 }
 
 #[test]
 fn station_lists_group_by_prefecture_and_keep_the_heading_when_scrolling() {
     let bulletin = crate::data::demo().pop().unwrap();
-    let rows = readings(&bulletin, Layer::Stations, StationGrouping::Prefecture);
+    let rows = readings(&bulletin, Layer::Stations, StationGrouping::Prefecture, 70);
     let headings: Vec<_> = rows
         .iter()
-        .filter(|(line, _)| line.starts_with("── "))
-        .map(|(line, _)| line.as_str())
+        .map(|line| line.render(70, false))
+        .filter(|line| line.starts_with("── "))
         .collect();
     assert_eq!(
         headings,
@@ -33,40 +34,67 @@ fn station_lists_group_by_prefecture_and_keep_the_heading_when_scrolling() {
             "── 秋田県"
         ]
     );
-    let (title, rows) = station_readings_window(&bulletin, StationGrouping::Prefecture, 4, 2);
+    let (title, rows) = station_readings_window(&bulletin, StationGrouping::Prefecture, 4, 2, 70);
     assert_eq!(title, "各地の震度 · 観測点  5–5/14");
-    assert_eq!(rows[0].0, "── 岩手県");
-    assert!(rows[1].0.contains("大船渡"));
-    let (title, rows) = station_readings_window(&bulletin, StationGrouping::Prefecture, 3, 4);
+    assert_eq!(rows[0].render(70, false), "── 岩手県");
+    assert!(rows[1].render(70, false).contains("大船渡"));
+    let (title, rows) = station_readings_window(&bulletin, StationGrouping::Prefecture, 3, 4, 70);
     assert_eq!(title, "各地の震度 · 観測点  4–5/14");
-    assert_eq!(rows[0].0, "── 宮城県");
-    assert!(rows[1].0.contains("仙台"));
-    assert_eq!(rows[2].0, "── 岩手県");
-    assert!(rows[3].0.contains("大船渡"));
+    assert_eq!(rows[0].render(70, false), "── 宮城県");
+    assert!(rows[1].render(70, false).contains("仙台"));
+    assert_eq!(rows[2].render(70, false), "── 岩手県");
+    assert!(rows[3].render(70, false).contains("大船渡"));
 }
 
 #[test]
-fn station_lists_can_group_intensities_across_prefectures() {
+fn station_lists_pack_municipalities_by_intensity_and_color_only_the_badge() {
     let mut bulletin = crate::data::demo().pop().unwrap();
-    bulletin.stations[0].level = Level::Known(5);
-    let rows = readings(&bulletin, Layer::Stations, StationGrouping::Intensity);
-    assert_eq!(
-        rows[0],
-        ("── 震度 5+".into(), reading_rgb(&Level::Known(5)))
+    bulletin.stations = [
+        (3, "芦北町", "芦北町芦北"),
+        (2, "津奈木町", "津奈木町小津奈木＊"),
+        (1, "芦北町", "芦北町田浦町＊"),
+        (1, "水俣市", "水俣市牧ノ内*"),
+        (1, "上天草市", "上天草市大矢野町"),
+        (1, "水俣市", "水俣市陣内＊"),
+        (1, "上天草市", "上天草市龍ヶ岳町＊"),
+        (1, "上天草市", "上天草市松島町＊"),
+        (1, "上天草市", "上天草市姫戸町＊"),
+    ]
+    .map(|(level, city, name)| Observation {
+        name: name.into(),
+        level: Level::Known(level),
+        location: None,
+        area_code: String::new(),
+        prefecture: Some("熊本県".into()),
+        municipality: Some(city.into()),
+    })
+    .into();
+    let width = 56;
+    let rows = readings(
+        &bulletin,
+        Layer::Stations,
+        StationGrouping::Intensity,
+        width,
     );
-    assert_eq!(rows[1].0, "石巻");
-    assert_eq!(
-        rows[2],
-        ("── 震度 5-".into(), reading_rgb(&Level::Known(4)))
-    );
-    let four = rows.iter().position(|row| row.0 == "── 震度 4").unwrap();
-    assert!(rows[four + 1].0.contains("気仙沼"));
-    assert!(rows[four + 2].0.contains("仙台"));
-    assert!(rows[four + 3].0.contains("大船渡"));
-    let (title, window) = station_readings_window(&bulletin, StationGrouping::Intensity, 1, 2);
-    assert!(title.contains("震度別"));
-    assert_eq!(window[0].0, "── 震度 5-");
-    assert_eq!(window[1].0, "南三陸");
+    let text: Vec<_> = rows.iter().map(|line| line.render(width, false)).collect();
+    assert!(text[0].contains("震度 4") && text[0].contains("1地点"));
+    assert!(text[1].trim().starts_with("芦北町") && !text[1].contains("芦北町芦北"));
+    assert!(text[2].contains("震度 3") && text[3].contains("小津奈木＊"));
+    assert!(text[4].contains("震度 2") && text[4].contains("7地点"));
+    assert!(text[6].contains("水俣市") && text[6].contains("牧ノ内＊  陣内＊"));
+    assert!(text[7].contains("上天草市") && text[7].contains("松島町＊  姫戸町＊"));
+    assert_eq!(text.last().unwrap(), "＊ 気象庁以外の観測点");
+    let badge = rows[0].render(width, true);
+    assert!(badge.contains("\x1b[48;2;255;166;72m"));
+    assert!(badge.contains("震度 4 \x1b[0m") && !badge.ends_with("震度 4"));
+    assert!(!rows[1].render(width, true).contains("\x1b[48;"));
+
+    let (title, narrow) = station_readings_window(&bulletin, StationGrouping::Intensity, 5, 4, 29);
+    assert!(title.contains("6–") && title.ends_with("/9"));
+    let narrow: Vec<_> = narrow.iter().map(|line| line.render(29, false)).collect();
+    assert!(narrow[0].contains("震度 2"));
+    assert!(narrow[1].contains("上天草市"));
+    assert!(narrow.iter().all(|line| styled_width(line) <= 29));
 }
 
 #[test]
@@ -85,7 +113,7 @@ fn startup_picker_fits_and_keeps_the_selected_renderer_visible() {
     let wide = map_picker(&options, 1, display);
     assert!(wide.text.contains(LOGO[0]));
     assert!(wide.text.contains("▸ [2] Kitty"));
-    assert!(wide.text.contains("点字で地図を描画"));
+    assert!(wide.text.contains("Unicode Braille  非推奨/表示調節中"));
     let border = wide.text.lines().find(|line| line.contains("╭")).unwrap();
     assert_eq!(border.find('╭'), Some((display.columns - 1 - 60) / 2));
 
@@ -103,6 +131,9 @@ fn startup_picker_fits_and_keeps_the_selected_renderer_visible() {
         display.colors = true;
         let frame = map_picker(&options, 2, display);
         assert!(frame.text.contains("▸ [3]"), "{columns} × {rows}");
+        if columns >= 25 {
+            assert!(frame.text.contains("非推奨"), "{columns} × {rows}");
+        }
         assert!(frame.text.lines().count() <= rows);
         assert!(frame.text.lines().all(|line| styled_width(line) < columns));
     }
@@ -169,7 +200,7 @@ fn control_rows_wrap_whole_key_action_pairs() {
             .iter()
             .any(|line| line.contains("[Z]") && line.contains("全国/周辺"))
     );
-    assert!(lines[0].contains("\x1b[38;2;125;213;210m[WASD]"));
+    assert!(lines[0].contains("\x1b[38;2;136;173;182m地図  [WASD]"));
 }
 
 #[test]
@@ -301,10 +332,25 @@ fn menu_colors_forecasts_yellow_and_warnings_red() {
         notice: Some(MenuNotice::Forecast),
     };
     assert!(
-        menu_lines(&[item], display)
+        menu_lines(std::slice::from_ref(&item), display)
             .join("\n")
             .contains("\x1b[38;2;255;222;94m")
     );
+    let active_tab = MenuItem {
+        key: '1',
+        label: "地震",
+        active: true,
+        notice: None,
+    };
+    let narrow = Display {
+        columns: 19,
+        colors: false,
+        ..display
+    };
+    let menu = menu_lines(&[active_tab, item], narrow);
+    assert!(menu.iter().all(|line| styled_width(line) <= narrow.width()));
+    assert!(menu.join(" ").contains("[1 地震]"));
+    assert!(menu.iter().all(|line| !line.contains(['│', '╭', '▸'])));
     item = MenuItem {
         key: '2',
         label: "EEW 警報",
@@ -312,7 +358,7 @@ fn menu_colors_forecasts_yellow_and_warnings_red() {
         notice: Some(MenuNotice::Warning),
     };
     assert!(
-        menu_lines(&[item], display)
+        menu_lines(std::slice::from_ref(&item), display)
             .join("\n")
             .contains("\x1b[38;2;255;97;98m")
     );
@@ -507,6 +553,7 @@ fn earthquake_sidebar_shows_observations_and_selected_history_in_a_standard_term
                 location: None,
                 area_code: String::new(),
                 prefecture: None,
+                municipality: None,
             }],
             ..Bulletin::default()
         },
@@ -535,14 +582,14 @@ fn earthquake_sidebar_shows_observations_and_selected_history_in_a_standard_term
         frame
             .text
             .lines()
-            .any(|line| line.contains("╭─ 地震の概要"))
+            .any(|line| line.contains("── 地震の概要"))
     );
     assert!(frame.text.lines().any(|line| line.contains("宮城県北部")));
     assert!(
         frame
             .text
             .lines()
-            .any(|line| line.contains("│ >") && line.contains("三陸沖"))
+            .any(|line| line.contains("> ") && line.contains("三陸沖"))
     );
     assert!(frame.text.lines().all(|line| line.width() < 80));
     assert!(frame.text.lines().count() <= 24);
@@ -582,6 +629,7 @@ fn history_stays_in_place_and_colors_each_known_intensity() {
                 location: None,
                 area_code: String::new(),
                 prefecture: None,
+                municipality: None,
             };
             25
         ],
@@ -631,13 +679,15 @@ fn history_stays_in_place_and_colors_each_known_intensity() {
     assert_eq!(history_row(&with_readings), history_row(&without_readings));
     let seven = with_readings
         .lines()
-        .find(|line| line.contains("紀伊水道") && line.contains(">"))
+        .find(|line| line.contains("紀伊水道") && line.contains("\x1b[48;2;37;70;87m"))
         .unwrap();
     assert!(seven.contains("\x1b[48;2;158;95;235m\x1b[38;2;0;0;0m 7  "));
     assert!(seven.matches("\x1b[48;2;37;70;87m").count() >= 2);
+    assert!(!seven.contains('>'));
+    assert!(!with_readings.contains("\x1b[38;2;177;125;79m"));
     let unknown = without_readings
         .lines()
-        .find(|line| line.contains("震源地不明") && line.contains(">"))
+        .find(|line| line.contains("震源地不明") && line.contains("\x1b[48;2;37;70;87m"))
         .unwrap();
     assert!(!unknown.contains("\x1b[48;2;158;95;235m"));
     assert_eq!(styled_width(seven), 99);
@@ -671,28 +721,27 @@ fn readings_fill_the_space_above_bottom_aligned_history() {
     let tall_history = render(50, "");
     let top = |rows: &[String], name: &str| {
         rows.iter()
-            .position(|line| line.starts_with('╭') && line.contains(name))
+            .position(|line| line.starts_with("── ") && line.contains(name))
             .unwrap()
     };
     let readings_bounds = |rows: &[String]| {
         let start = top(rows, "観測点");
-        let end = rows
-            .iter()
-            .enumerate()
-            .skip(start + 1)
-            .find(|(_, line)| line.starts_with('╰'))
-            .unwrap()
-            .0;
+        let end = top(rows, "地震履歴");
         (start, end)
     };
     let (normal_top, normal_bottom) = readings_bounds(&normal);
     assert_eq!(readings_bounds(&short), (normal_top, normal_bottom + 6));
     assert_eq!(readings_bounds(&retrying), (normal_top, normal_bottom));
-    assert_eq!(readings_bounds(&tall_history), (normal_top, normal_top + 3));
+    assert_eq!(readings_bounds(&tall_history), (normal_top, normal_top + 4));
     for rows in [normal, short, retrying, tall_history] {
         assert_eq!(rows.len(), 38);
-        assert_eq!(readings_bounds(&rows).1 + 1, top(&rows, "地震履歴"));
-        assert!(rows[37].starts_with('╰'));
+        assert!(!rows.iter().any(|line| line.contains(['╭', '╰'])));
+        let heading = top(&rows, "地震履歴");
+        assert!(
+            rows[heading + 1..heading + 3]
+                .iter()
+                .any(|line| line.contains("発生"))
+        );
     }
 }
 
@@ -734,21 +783,21 @@ fn wide_map_and_earthquake_sidebar_use_the_available_width() {
     assert!(frame.text.lines().next().unwrap().contains("3 津波"));
     let top = frame.text.lines().nth(frame.map_row - 2).unwrap();
     assert!(top.starts_with("╭─ 地図 · 全国"));
-    assert!(top.contains("╭─ 地震の概要"));
+    assert!(top.contains("── 地震の概要"));
     assert_eq!(top.width(), 159);
     assert!(
         frame
             .text
             .lines()
-            .any(|line| line.contains("╭─ 各地の震度 · 観測点"))
+            .any(|line| line.contains("── 各地の震度 · 観測点"))
     );
     assert!(frame.text.lines().any(|line| line.contains("│ ── 宮城県")));
-    assert!(frame.text.lines().any(|line| line.contains("╭─ 地震履歴")));
+    assert!(frame.text.lines().any(|line| line.contains("── 地震履歴")));
     assert!(
         frame
             .text
             .lines()
-            .any(|line| line.starts_with('╰') && line.matches('╰').count() == 2)
+            .any(|line| line.starts_with('╰') && line.matches('╰').count() == 1)
     );
     let entries = frame
         .text
@@ -783,6 +832,90 @@ fn wide_map_and_earthquake_sidebar_use_the_available_width() {
         compact
             .text
             .lines()
-            .any(|line| line.contains("│ >") && line.contains("試験地震 20"))
+            .any(|line| line.starts_with("> ") && line.contains("試験地震 20"))
     );
+}
+
+#[test]
+fn help_is_centered_and_only_shows_actions_for_the_current_tab() {
+    let display = Display {
+        columns: 80,
+        rows: 24,
+        colors: true,
+        map: Map::Image(Image::Sixel((10, 20))),
+    };
+    assert_eq!(
+        footer(
+            &QUAKE_KEYS,
+            Display {
+                colors: false,
+                ..display
+            }
+        ),
+        "↑↓ 選択  Enter 地図  H ヘルプ  Q 終了"
+    );
+    let mut scroll = 0;
+    let quake = help(HelpTopic::QuakeMap { narrow: false }, display, &mut scroll);
+    assert!(quake.row > 1 && quake.column > 1);
+    assert!(quake.row + quake.lines.len() <= display.rows);
+    assert!(quake.column + styled_width(&quake.lines[0]) <= display.columns);
+    let text = quake.lines.join("\n");
+    assert!(text.contains("地震の操作") && text.contains("WASD"));
+    assert!(!text.contains("津波情報を更新") && !text.contains("保存欄"));
+
+    let tsunami = help(HelpTopic::Tsunami, display, &mut scroll)
+        .lines
+        .join("\n");
+    assert!(tsunami.contains("津波の操作") && tsunami.contains("津波情報を更新"));
+    assert!(!tsunami.contains("WASD") && !tsunami.contains("地震情報を更新"));
+
+    let narrow = Display {
+        columns: 21,
+        rows: 10,
+        ..display
+    };
+    scroll = usize::MAX;
+    let settings = help(HelpTopic::Settings, narrow, &mut scroll);
+    assert!(scroll > 0 && scroll < usize::MAX);
+    assert!(settings.lines.iter().any(|line| line.contains("H 閉じる")));
+    assert!(
+        settings
+            .lines
+            .iter()
+            .all(|line| styled_width(line) <= narrow.width())
+    );
+    assert!(settings.row + settings.lines.len() <= narrow.rows);
+}
+
+#[test]
+fn history_shows_depths_and_marks_missing_values() {
+    let reports = [
+        (Some(0), "三陸沖"),
+        (Some(1000), "父島近海"),
+        (None, "紀伊水道"),
+    ]
+    .map(|(depth, name)| Report {
+        id: name.into(),
+        bulletin: Bulletin {
+            depth,
+            name: name.into(),
+            magnitude: "4.2".into(),
+            maximum: Some(Level::Known(2)),
+            ..Bulletin::default()
+        },
+    });
+    let history = History {
+        reports: &reports,
+        selected: 0,
+        status: "",
+        row_limit: 10,
+    };
+    for (width, ansi) in [(29, false), (40, true), (56, false)] {
+        let lines = history_lines(history, width, 4, ansi);
+        assert!(lines[0].contains("深さ") && lines[0].contains("震源地"));
+        assert!(lines[1].contains("0km") && lines[1].contains("三陸沖"));
+        assert!(lines[2].contains("1000km") && lines[2].contains("父島近海"));
+        assert!(lines[3].contains("—") && lines[3].contains("紀伊水道"));
+        assert!(lines.iter().all(|line| styled_width(line) <= width));
+    }
 }

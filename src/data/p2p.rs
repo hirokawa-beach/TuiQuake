@@ -55,6 +55,7 @@ fn read_quake(packet: &Value) -> Option<Report> {
             location: if region { None } else { station_location(name) },
             area_code: String::new(),
             prefecture: (!prefecture.is_empty()).then(|| prefecture.to_owned()),
+            municipality: None,
         };
         if region {
             regions.push(observation);

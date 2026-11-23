@@ -80,6 +80,15 @@ pub(super) fn text_cell(
     if colors {
         return color_quadrants(pixels.map(|quarter| average(quarter.into_iter().map(map_ink))));
     }
+    if let Some(coast) = pixels
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|&pixel| pixel >= map::TSUNAMI_FORECAST)
+        .max()
+    {
+        return (map::plain(coast), sea, sea);
+    }
 
     let mut warning = false;
     let mut land = 0;
@@ -153,8 +162,10 @@ pub(super) fn braille_cell(pixels: [[Color; 4]; 8], colors: bool) -> (char, Rgb,
     }
     let sea = map_ink(map::SEA);
     if !colors {
-        if area == Some(map::WARNING) {
-            return (map::plain(map::WARNING), sea, sea);
+        if let Some(area) =
+            area.filter(|&area| area == map::WARNING || area >= map::TSUNAMI_FORECAST)
+        {
+            return (map::plain(area), sea, sea);
         }
         surrounding &= 0x95;
     }

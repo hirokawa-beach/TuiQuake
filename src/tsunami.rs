@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::data::{Provider, ServerClock, Tsunami};
+use crate::data::{Provider, ServerClock, Stamp, Tsunami, TsunamiStatus};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub enum Validity {
@@ -16,12 +16,14 @@ pub struct State {
     pub wolfx: Option<Tsunami>,
     pub reference: Option<Tsunami>,
     pub validity: Validity,
+    pub last_issued: Option<Stamp>,
     wolfx_clock: Option<ServerClock>,
     expires: Option<Instant>,
 }
 
 impl State {
     pub fn receive(&mut self, report: Tsunami, now: Instant) {
+        self.last_issued = self.last_issued.max(report.issued);
         if report.provider == Provider::P2p {
             self.reference = Some(report);
         } else {
@@ -77,10 +79,13 @@ impl State {
     }
 
     pub fn verified(&self, provider: Provider) -> Option<&Tsunami> {
-        let report = self
-            .wolfx
-            .as_ref()
-            .filter(|_| self.validity == Validity::Current)?;
+        let report = self.wolfx.as_ref().filter(|report| {
+            self.validity == Validity::Current
+                && matches!(
+                    report.status,
+                    TsunamiStatus::Alert | TsunamiStatus::Forecast | TsunamiStatus::Clear
+                )
+        })?;
         if provider == Provider::P2p
             && self
                 .reference

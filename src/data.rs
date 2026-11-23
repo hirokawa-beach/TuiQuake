@@ -76,6 +76,38 @@ impl Level {
             Self::Other(label) => label,
         }
     }
+
+    pub fn forecast_badge(&self) -> Option<Self> {
+        if self.index().is_some() {
+            return Some(self.clone());
+        }
+        let normalized: String = self
+            .label()
+            .chars()
+            .map(|ch| match ch {
+                '０'..='９' => char::from(b'0' + (ch as u32 - '０' as u32) as u8),
+                _ => ch,
+            })
+            .collect();
+        let label = normalized
+            .trim_end_matches("以上")
+            .trim_end()
+            .trim_end_matches("程度")
+            .trim();
+        let parse = |bound: &str| {
+            Self::parse(bound.trim().trim_start_matches("震度"))
+                .filter(|level| level.index().is_some())
+        };
+        if let Some(level) = parse(label) {
+            return Some(level);
+        }
+        let (lower, upper) = label
+            .split_once("から")
+            .or_else(|| label.split_once(['〜', '～', '~', '–']))?;
+        let upper = parse(upper)?;
+        let lower = lower.trim().trim_start_matches("震度").trim();
+        (lower == "0" || parse(lower)?.index() <= upper.index()).then_some(upper)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +117,7 @@ pub struct Observation {
     pub location: Option<Location>,
     pub area_code: String,
     pub prefecture: Option<String>,
+    pub municipality: Option<String>,
 }
 
 pub type Stamp = DateTime<FixedOffset>;
@@ -123,6 +156,15 @@ pub struct ForecastArea {
     pub maximum: Option<Level>,
 }
 
+impl ForecastArea {
+    pub fn display_level(&self) -> Option<u8> {
+        self.maximum
+            .as_ref()
+            .and_then(Level::index)
+            .or_else(|| self.minimum.as_ref().and_then(Level::index))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Provider {
     #[default]
@@ -151,7 +193,9 @@ pub struct Bulletin {
     pub depth: Option<u32>,
     pub maximum: Option<Level>,
     pub warning: bool,
+    pub eew_warning_issued: Option<Stamp>,
     pub eew: bool,
+    pub plum_assumed_hypocenter: bool,
     pub eew_cancelled: bool,
     pub eew_serial: Option<u64>,
     pub eew_final: bool,
@@ -214,6 +258,11 @@ fn station_location(name: &str) -> Option<Location> {
 }
 
 impl Bulletin {
+    pub fn has_eew_warning(&self) -> bool {
+        !self.eew_cancelled
+            && (self.warning || self.eew_warning_issued.is_some() || !self.warning_areas.is_empty())
+    }
+
     pub fn has_observations(&self) -> bool {
         !self.stations.is_empty() || !self.regions.is_empty()
     }
@@ -260,18 +309,70 @@ pub fn merge_reports(list: &Arc<[Report]>, details: &Arc<[Report]>) -> Arc<[Repo
     joined.into()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TsunamiStatus {
+    Alert,
+    Forecast,
+    Clear,
+    Expired,
+    Unknown,
+    Waiting,
+    Reference { cancelled: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TsunamiLevel {
+    MajorWarning,
+    Warning,
+    Advisory,
+    Forecast,
+    Cleared,
+    None,
+    Unknown,
+}
+
+impl TsunamiLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MajorWarning => "大津波警報",
+            Self::Warning => "津波警報",
+            Self::Advisory => "津波注意報",
+            Self::Forecast => "津波予報",
+            Self::Cleared => "解除",
+            Self::None => "津波なし",
+            Self::Unknown => "区分不明",
+        }
+    }
+}
+
+pub struct TsunamiArea {
+    pub code: String,
+    pub name: String,
+    pub level: TsunamiLevel,
+    pub details: String,
+}
+
+impl TsunamiArea {
+    pub fn line(&self) -> String {
+        format!("{}  {}{}", self.level.label(), self.name, self.details)
+    }
+}
+
 pub struct Tsunami {
     pub provider: Provider,
-    pub title: &'static str,
+    pub status: TsunamiStatus,
     event_ids: Vec<String>,
     event_notice: Option<&'static str>,
-    pub alert: bool,
     pub valid_until: Option<Stamp>,
     pub issued: Option<Stamp>,
-    pub areas: Vec<String>,
+    pub areas: Vec<TsunamiArea>,
 }
 
 impl Tsunami {
+    pub fn alert(&self) -> bool {
+        self.status == TsunamiStatus::Alert
+    }
+
     pub fn notice_for(&self, id: &str) -> Option<&'static str> {
         self.event_notice
             .filter(|_| self.event_ids.iter().any(|event| event == id))
@@ -392,6 +493,14 @@ impl Client {
     }
 }
 
+pub fn demo_bell(previous: Option<&Bulletin>, current: &Bulletin) -> bool {
+    current.eew
+        && !current.eew_cancelled
+        && previous.is_none_or(|report| {
+            !report.eew || report.eew_cancelled || current.warning && !report.warning
+        })
+}
+
 pub fn set_demo_intensity(report: &mut Bulletin, maximum: u8) {
     report.maximum = Some(Level::Known(maximum));
     for (index, area) in report.forecast_areas.iter_mut().enumerate() {
@@ -487,6 +596,11 @@ pub fn demo() -> Vec<Bulletin> {
         location: Location::new(lon, lat),
         area_code: String::new(),
         prefecture: Some(prefecture.into()),
+        municipality: Some(if name == "南三陸" {
+            "南三陸町".into()
+        } else {
+            format!("{name}市")
+        }),
     })
     .collect();
     actual.regions = [
@@ -507,6 +621,7 @@ pub fn demo() -> Vec<Bulletin> {
         location: None,
         area_code: code.into(),
         prefecture: None,
+        municipality: None,
     })
     .collect();
     vec![first, second, actual]
@@ -542,6 +657,11 @@ mod tests {
         assert_eq!(history.len(), 1);
         let bulletin = &history[0].bulletin;
         assert_eq!(bulletin.name, "トカラ列島近海");
+        assert_eq!(bulletin.depth, Some(0));
+        assert_eq!(
+            bulletin.stations[0].municipality.as_deref(),
+            Some("鹿児島十島村")
+        );
         assert!(
             bulletin
                 .stations
@@ -611,13 +731,20 @@ mod tests {
                     {"pref":1}
                 ],
                 "cities": [
-                    {"area":0, "stations":[{"code":"1", "name":"大船渡", "int":"3"}]},
+                    {"area":0,"name":"大船渡市","stations":[{"code":"1", "name":"大船渡", "int":"3"}]},
                     {"area":1, "stations":[{"code":"2", "name":"石巻", "int":"4"}]},
                     {"area":9, "stations":[{"code":"3", "name":"区域不明の観測点", "int":"2"}]}
                 ]
             }}]
         }))
         .unwrap();
+        let duplicated = report
+            .bulletin
+            .stations
+            .iter()
+            .find(|station| station.name == "大船渡")
+            .unwrap();
+        assert_eq!(duplicated.municipality.as_deref(), Some("大船渡市"));
         let prefectures: Vec<_> = report
             .bulletin
             .stations
@@ -650,7 +777,7 @@ mod tests {
         );
         let tsunami = json!({"type":"jma_tsunami","status":"unknown"});
         assert!(
-            matches!(live_update(&tsunami, None), Some(LiveUpdate::Tsunami(report)) if !report.alert)
+            matches!(live_update(&tsunami, None), Some(LiveUpdate::Tsunami(report)) if !report.alert())
         );
     }
 
@@ -701,7 +828,7 @@ mod tests {
             start,
         );
         tsunami.update(start + Duration::from_secs(59));
-        assert!(tsunami.verified(Provider::Wolfx).unwrap().alert);
+        assert!(tsunami.verified(Provider::Wolfx).unwrap().alert());
         let reference = p2p_tsunami_reference();
         tsunami.receive(reference, start + Duration::from_secs(59));
         assert!(tsunami.verified(Provider::P2p).is_none());
@@ -719,11 +846,38 @@ mod tests {
         assert!(tsunami.verified(Provider::Wolfx).is_none());
     }
 
+    #[test]
+    fn a_provider_expiry_never_counts_as_confirmed_tsunami_clearance() {
+        let now = Instant::now();
+        let utc = parse_time("2026-11-22T10:20:00Z").unwrap().to_utc();
+        let mut tsunami = crate::tsunami::State::default();
+        tsunami.sync_wolfx(ServerClock { utc, received: now }, now);
+        let mut packet = json!({
+            "status": "expired",
+            "trusted": true,
+            "validUntil": "2026-11-22T10:21:00Z",
+            "report": {"time": "2026-11-22T10:19:00Z"}
+        });
+        tsunami.receive(read_tsunami(&packet).unwrap(), now);
+        tsunami.update(now);
+        assert!(tsunami.verified(Provider::Wolfx).is_none());
+        packet["status"] = "cleared".into();
+        tsunami.receive(read_tsunami(&packet).unwrap(), now);
+        tsunami.update(now);
+        assert!(
+            tsunami
+                .verified(Provider::Wolfx)
+                .is_some_and(|report| report.status == TsunamiStatus::Clear)
+        );
+        tsunami.update(now + Duration::from_secs(60));
+        assert!(tsunami.verified(Provider::Wolfx).is_none());
+        assert!(tsunami.last_issued.is_some());
+    }
+
     fn p2p_tsunami_reference() -> Tsunami {
         Tsunami {
             provider: Provider::P2p,
-            title: "津波の発表内容",
-            alert: false,
+            status: TsunamiStatus::Reference { cancelled: false },
             valid_until: None,
             issued: parse_time("2026-11-22T10:20:30Z"),
             areas: Vec::new(),
@@ -740,6 +894,7 @@ mod tests {
             "validUntil": "2026-11-18T00:05:00Z",
             "report": {"time": "2026-11-18T00:00:00Z"},
             "areas": [{
+                "code": "210",
                 "name": "岩手県",
                 "level": "major_warning",
                 "maxWave": {"height": 10, "text": "10m超"},
@@ -747,13 +902,15 @@ mod tests {
             }]
         });
         let report = read_tsunami(&packet).unwrap();
-        assert!(report.alert);
+        assert!(report.alert());
         assert!(report.current(parse_time("2026-11-18T00:04:59Z").unwrap().to_utc()));
         assert!(!report.current(parse_time("2026-11-18T00:05:00Z").unwrap().to_utc()));
         assert_eq!(
-            report.areas[0],
+            report.areas[0].line(),
             "大津波警報  岩手県  10m超  第1波 11/18 09:10 JST"
         );
+        assert_eq!(report.areas[0].code, "210");
+        assert_eq!(report.areas[0].level, TsunamiLevel::MajorWarning);
         packet["trusted"] = false.into();
         assert!(
             !read_tsunami(&packet)
@@ -805,6 +962,11 @@ mod tests {
         assert!(bulletin.forecast_areas[1].minimum.is_none());
         assert_eq!(bulletin.eew_serial, Some(4));
         assert!(!bulletin.eew_final);
+        packet["isAssumption"] = json!(true);
+        packet["Magnitude"] = json!(1.0);
+        let assumed = read_eew(&packet).unwrap().unwrap();
+        assert!(assumed.plum_assumed_hypocenter && assumed.epicenter.is_some());
+        assert!(assumed.magnitude.is_empty() && assumed.depth.is_none());
         packet["isWarn"] = json!(false);
         packet["isFinal"] = json!(true);
         packet["Serial"] = json!("4");
@@ -812,10 +974,11 @@ mod tests {
         assert_eq!(bulletin.eew_serial, Some(4));
         assert!(bulletin.eew_final);
         assert!(bulletin.label.starts_with("EEW 予報"));
-        assert!(bulletin.warning_areas.is_empty());
+        assert_eq!(bulletin.warning_areas, ["静岡県東部"]);
         assert_eq!(bulletin.forecast_areas.len(), 2);
         packet["isCancel"] = json!(true);
         let cancelled = read_eew(&packet).unwrap().unwrap();
+        assert!(!cancelled.plum_assumed_hypocenter);
         assert!(cancelled.epicenter.is_none());
         assert!(cancelled.forecast_areas.is_empty());
         packet["isTraining"] = json!(true);

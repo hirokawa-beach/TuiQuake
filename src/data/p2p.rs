@@ -9,7 +9,8 @@ use serde_json::Value;
 
 use super::{
     Bulletin, Client, ForecastArea, Level, LiveQuery, LiveUpdate, Observation, Provider, Report,
-    Result, ServerClock, Stamp, Tsunami, depth, entries, epicenter, magnitude, parse_time,
+    Result, ServerClock, Stamp, Tsunami, TsunamiStatus, depth, entries, epicenter, magnitude,
+    parse_time,
     socket::{connect_live, http_clock, read_live, read_timed_out},
     station_location, text,
 };
@@ -55,6 +56,7 @@ fn read_quake(packet: &Value) -> Option<Report> {
             location: if region { None } else { station_location(name) },
             area_code: String::new(),
             prefecture: (!prefecture.is_empty()).then(|| prefecture.to_owned()),
+            municipality: None,
         };
         if region {
             regions.push(observation);
@@ -104,6 +106,8 @@ fn read_quake(packet: &Value) -> Option<Report> {
 }
 
 fn tsunami(packet: &Value) -> Result<Tsunami> {
+    use super::{TsunamiArea, TsunamiLevel};
+
     let issue = parse_time(text(&packet["issue"]["time"])).ok_or("津波発表時刻が不正です")?;
     let cancelled = packet["cancelled"]
         .as_bool()
@@ -115,36 +119,36 @@ fn tsunami(packet: &Value) -> Result<Tsunami> {
                 return None;
             }
             let level = match text(&area["grade"]) {
-                "MajorWarning" => "大津波警報",
-                "Warning" => "津波警報",
-                "Watch" => "津波注意報",
-                _ => "区分不明",
+                "MajorWarning" => TsunamiLevel::MajorWarning,
+                "Warning" => TsunamiLevel::Warning,
+                "Watch" => TsunamiLevel::Advisory,
+                _ => TsunamiLevel::Unknown,
             };
-            let mut line = format!("{level}  {name}");
+            let mut details = String::new();
             let height = text(&area["maxHeight"]["description"]);
             let first = &area["firstHeight"];
             let condition = text(&first["condition"]);
             if !height.is_empty() {
-                line.push_str(&format!("  {height}"));
+                details.push_str(&format!("  {height}"));
             }
             if !condition.is_empty() {
-                line.push_str(&format!("  第1波 {condition}"));
+                details.push_str(&format!("  第1波 {condition}"));
             } else if let Some(at) = parse_time(text(&first["arrivalTime"])) {
-                line.push_str(&format!("  第1波 {} JST", at.format("%m/%d %H:%M")));
+                details.push_str(&format!("  第1波 {} JST", at.format("%m/%d %H:%M")));
             } else if area["immediate"].as_bool() == Some(true) {
-                line.push_str("  第1波 直ちに来襲と予測");
+                details.push_str("  第1波 直ちに来襲と予測");
             }
-            Some(line)
+            Some(TsunamiArea {
+                code: String::new(),
+                name: name.into(),
+                level,
+                details,
+            })
         })
         .collect();
     Ok(Tsunami {
         provider: Provider::P2p,
-        title: if cancelled {
-            "津波警報・注意報の解除報"
-        } else {
-            "津波の発表内容"
-        },
-        alert: false,
+        status: TsunamiStatus::Reference { cancelled },
         valid_until: None,
         issued: Some(issue),
         event_ids: Vec::new(),
@@ -197,9 +201,8 @@ fn eew(packet: &Value) -> Result<Option<Bulletin>> {
     bulletin.name = text(&hypocenter["name"]).into();
     bulletin.origin = parse_time(text(&quake["originTime"]));
     bulletin.epicenter = epicenter(&hypocenter["longitude"], &hypocenter["latitude"]);
-    if text(&quake["condition"]) == "仮定震源要素" {
-        bulletin.comment = "仮定震源要素".into();
-    } else {
+    bulletin.plum_assumed_hypocenter = text(&quake["condition"]) == "仮定震源要素";
+    if !bulletin.plum_assumed_hypocenter {
         bulletin.magnitude = magnitude(&hypocenter["magnitude"]).unwrap_or_default();
         bulletin.depth = depth(&hypocenter["depth"]);
     }
@@ -328,11 +331,10 @@ pub(super) fn connect(
     requests: &mpsc::Receiver<LiveQuery>,
     notify: &mut dyn FnMut(LiveUpdate) -> bool,
 ) -> Result<()> {
-    let (mut socket, clock) = connect_live(SOCKET)?;
+    let (mut socket, mut clock) = connect_live(SOCKET)?;
     if !notify(LiveUpdate::Connection(Provider::P2p, None)) {
         return Ok(());
     }
-    let mut has_clock = clock.is_some();
     if let Some(clock) = clock
         && !notify(LiveUpdate::Clock(Provider::P2p, clock))
     {
@@ -344,6 +346,7 @@ pub(super) fn connect(
     let mut refresh_at = Instant::now();
     let mut last_message = refresh_at;
     let mut ping_at = refresh_at + Duration::from_secs(30);
+    let mut clock_at = ping_at;
     loop {
         loop {
             match requests.try_recv() {
@@ -356,15 +359,17 @@ pub(super) fn connect(
             match download.try_recv() {
                 Ok(snapshot) => {
                     pending = None;
-                    let clock = snapshot
+                    let snapshot_clock = snapshot
                         .quakes
                         .as_ref()
                         .ok()
                         .and_then(|(_, clock)| *clock)
                         .or_else(|| snapshot.tsunami.as_ref().ok().and_then(|(_, clock)| *clock));
-                    if !has_clock && let Some(clock) = clock {
-                        has_clock = true;
-                        if !notify(LiveUpdate::Clock(Provider::P2p, clock)) {
+                    if clock.is_none()
+                        && let Some(sample) = snapshot_clock
+                    {
+                        clock = Some(sample);
+                        if !notify(LiveUpdate::Clock(Provider::P2p, sample)) {
                             return Ok(());
                         }
                     }
@@ -422,6 +427,18 @@ pub(super) fn connect(
         match read_live(&mut socket) {
             Ok(packet) => {
                 last_message = Instant::now();
+                if last_message >= clock_at
+                    && let Some(sample) = clock
+                {
+                    clock_at = last_message + Duration::from_secs(30);
+                    let latest = ServerClock {
+                        utc: sample.at(last_message),
+                        received: last_message,
+                    };
+                    if !notify(LiveUpdate::Clock(Provider::P2p, latest)) {
+                        return Ok(());
+                    }
+                }
                 if let Some(update) = packet
                     .as_ref()
                     .and_then(decode)
@@ -455,8 +472,8 @@ mod tests {
             panic!("expected P2P tsunami report");
         };
         assert_eq!(report.provider, Provider::P2p);
-        assert!(!report.alert && report.valid_until.is_none());
-        assert_eq!(report.areas, ["津波警報  岩手県  3m"]);
+        assert!(!report.alert() && report.valid_until.is_none());
+        assert_eq!(report.areas[0].line(), "津波警報  岩手県  3m");
         assert!(matches!(
             decode(&json!({"code":552})),
             Some(LiveUpdate::TsunamiInvalid(_))
@@ -479,6 +496,13 @@ mod tests {
             Some(4)
         );
         assert!(report.forecast_areas[0].maximum.is_none() && report.maximum.is_none());
+        packet["earthquake"] = json!({
+            "condition": "仮定震源要素",
+            "hypocenter": {"name":"岩手県沿岸南部", "magnitude":1.0, "depth":10}
+        });
+        let report = eew(&packet).unwrap().unwrap();
+        assert!(report.plum_assumed_hypocenter);
+        assert!(report.magnitude.is_empty() && report.depth.is_none());
         packet["cancelled"] = true.into();
         assert!(eew(&packet).unwrap().unwrap().eew_cancelled);
         packet["test"] = true.into();

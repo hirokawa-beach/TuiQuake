@@ -89,8 +89,8 @@ impl Map {
         match self {
             Self::Image(Image::Sixel(_)) => "Sixel",
             Self::Image(Image::Kitty) => "Kitty",
-            Self::Braille => "Unicode Braille",
-            Self::Text => "文字地図",
+            Self::Braille => "Unicode Braille  非推奨/表示調節中",
+            Self::Text => "文字地図  非推奨",
         }
     }
 }

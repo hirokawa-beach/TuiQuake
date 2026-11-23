@@ -5,6 +5,9 @@ use std::{
 
 use crate::data::{Bulletin, Location, Result};
 
+mod tsunami;
+pub use tsunami::{has_coast, tsunami_color};
+
 pub type Color = u8;
 pub type Rgb = (u8, u8, u8);
 pub const SEA: Color = 0;
@@ -14,10 +17,14 @@ pub const WARNING: Color = 3;
 pub const EPICENTER: Color = 4;
 pub const REGION: Color = 5;
 pub const STATION: Color = 14;
+pub const TSUNAMI_FORECAST: Color = 23;
+const TSUNAMI_ADVISORY: Color = 24;
+const TSUNAMI_WARNING: Color = 25;
+const TSUNAMI_MAJOR_WARNING: Color = 26;
 pub const TEXT_CELL_WIDTH: usize = 4;
 pub const TEXT_CELL_HEIGHT: usize = 8;
 pub(crate) const SHORT_INTENSITIES: [&str; 9] = ["1", "2", "3", "4", "5-", "5+", "6-", "6+", "7"];
-pub const PALETTE: [Rgb; 23] = [
+pub const PALETTE: [Rgb; 27] = [
     (15, 27, 42),
     (54, 91, 98),
     (36, 55, 66),
@@ -41,13 +48,17 @@ pub const PALETTE: [Rgb; 23] = [
     (255, 115, 163),
     (231, 104, 201),
     (158, 95, 235),
+    (119, 213, 255),
+    (255, 222, 94),
+    (255, 74, 83),
+    (195, 95, 255),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layer {
-    #[default]
     Regions,
+    #[default]
     Stations,
 }
 
@@ -61,14 +72,37 @@ impl Layer {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Regions => "広域",
+            Self::Regions => "地域別",
             Self::Stations => "観測点",
         }
     }
 }
 
 const ZOOM_STEP: f64 = 1.4;
-const EEW_AUTO_ZOOM_STEPS: u16 = 3;
+const EEW_AUTO_ZOOM_STEPS: u16 = 7;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EewLayer {
+    #[default]
+    Warning,
+    Forecast,
+}
+
+impl EewLayer {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Warning => Self::Forecast,
+            Self::Forecast => Self::Warning,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Warning => "警報対象",
+            Self::Forecast => "推定震度",
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct MapViewport {
@@ -80,6 +114,7 @@ struct MapViewport {
 #[derive(Clone, Copy)]
 pub struct View {
     pub national: bool,
+    pub eew_layer: EewLayer,
     manual_zoom: Option<u16>,
     center: Option<(f64, f64)>,
     rendered: Option<MapViewport>,
@@ -89,6 +124,7 @@ impl View {
     pub fn new(national: bool) -> Self {
         Self {
             national,
+            eew_layer: EewLayer::default(),
             manual_zoom: None,
             center: None,
             rendered: None,
@@ -370,7 +406,7 @@ impl Atlas {
         self.names.contains_key(name)
     }
 
-    fn event_bounds(&self, bulletins: &[Bulletin]) -> Option<Bounds> {
+    fn event_bounds(&self, bulletins: &[Bulletin], layer: EewLayer) -> Option<Bounds> {
         let positions = bulletins
             .iter()
             .flat_map(|v| {
@@ -393,6 +429,14 @@ impl Atlas {
                             .iter()
                             .filter_map(|area| self.area(&area.area_code, &area.name)),
                     )
+                    .chain(
+                        v.forecast_areas
+                            .iter()
+                            .filter(move |area| {
+                                layer == EewLayer::Forecast && area.display_level().is_some()
+                            })
+                            .filter_map(|area| self.area("", &area.name)),
+                    )
             })
             .flat_map(|index| self.regions[index].iter().map(|shape| shape.bounds));
         positions.chain(areas).reduce(Bounds::merge)
@@ -412,14 +456,33 @@ impl Atlas {
         } else {
             sequence
         };
-        let context = self.event_bounds(sequence).unwrap_or(self.national);
+        let context = self
+            .event_bounds(sequence, view.eew_layer)
+            .unwrap_or(self.national);
         let focus = if view.national {
             self.national
         } else if view.manual_zoom.is_some() {
-            self.event_bounds(current).unwrap_or(context)
+            self.event_bounds(current, view.eew_layer)
+                .unwrap_or(context)
         } else {
             context
         };
+        let max_steps = if bulletin.eew {
+            EEW_AUTO_ZOOM_STEPS
+        } else {
+            u16::MAX
+        };
+        self.fit_view(context, focus, max_steps, view, (width, height))
+    }
+
+    fn fit_view(
+        &self,
+        context: Bounds,
+        focus: Bounds,
+        max_steps: u16,
+        view: &mut View,
+        (width, height): (usize, usize),
+    ) -> Extent {
         let width = width as f64;
         let height = height as f64;
         let fit = |bounds: Bounds| {
@@ -433,11 +496,7 @@ impl Atlas {
         let zoom_steps = view.manual_zoom.unwrap_or_else(|| {
             let desired = fit(focus).max(3.5 / height);
             let steps = ((widest / desired).ln() / ZOOM_STEP.ln()).floor() as u16;
-            if bulletin.eew {
-                steps.min(EEW_AUTO_ZOOM_STEPS)
-            } else {
-                steps
-            }
+            steps.min(max_steps)
         });
         let step = widest / ZOOM_STEP.powi(i32::from(zoom_steps));
         let span = (step * width, step * height);
@@ -474,19 +533,6 @@ impl Atlas {
     ) -> View {
         let image = image_cell.is_some();
         let extent = self.extent(bulletin, sequence, &mut view, raster.width, raster.height);
-        raster.pixels.fill(SEA);
-        raster.labels.clear();
-        if !image {
-            raster.markers.resize(
-                (raster.width / TEXT_CELL_WIDTH) * (raster.height / TEXT_CELL_HEIGHT),
-                None,
-            );
-            raster.markers.fill(None);
-        }
-        raster.islands.clear();
-        for shape in &self.surroundings {
-            raster.paint(shape, SURROUNDINGS, extent);
-        }
         let mut colors = vec![LAND; self.regions.len()];
         let mut labels = Vec::new();
         if layer == Layer::Regions {
@@ -502,10 +548,63 @@ impl Atlas {
                 }
             }
         }
-        for area in &bulletin.warning_areas {
-            if let Some(index) = self.area("", area) {
-                colors[index] = WARNING;
+        match view.eew_layer {
+            EewLayer::Warning => {
+                for area in &bulletin.warning_areas {
+                    if let Some(index) = self.area("", area) {
+                        colors[index] = WARNING;
+                    }
+                }
             }
+            EewLayer::Forecast => {
+                for area in &bulletin.forecast_areas {
+                    if let Some((index, level)) =
+                        self.area("", &area.name).zip(area.display_level())
+                    {
+                        colors[index] = REGION + level;
+                    }
+                }
+            }
+        }
+        self.draw_base(raster, extent, colors.into_iter(), image);
+        if image && layer == Layer::Stations {
+            for point in bulletin.stations.iter().rev() {
+                if let Some((where_, level)) = point.location.zip(point.level.index()) {
+                    raster.mark(where_, STATION + level, extent, image);
+                }
+            }
+        }
+        if let Some(where_) = bulletin.epicenter {
+            raster.mark(where_, EPICENTER, extent, image);
+        }
+
+        if !labels.is_empty() {
+            let cell = image_cell.unwrap_or((TEXT_CELL_WIDTH, TEXT_CELL_HEIGHT));
+            labels.sort_by_key(|&(_, level)| std::cmp::Reverse(level));
+            raster.place_labels(&labels, bulletin.epicenter, extent, cell, image);
+        }
+        view
+    }
+
+    fn draw_base(
+        &self,
+        raster: &mut Raster,
+        extent: Extent,
+        colors: impl Iterator<Item = Color>,
+        image: bool,
+    ) {
+        raster.pixels.fill(SEA);
+        raster.labels.clear();
+        if !image {
+            raster.markers.resize(
+                (raster.width / TEXT_CELL_WIDTH) * (raster.height / TEXT_CELL_HEIGHT),
+                None,
+            );
+            raster.markers.fill(None);
+        }
+        raster.islands.clear();
+        for shape in &self.surroundings {
+            raster.paint(shape, SURROUNDINGS, extent);
         }
         for (shapes, color) in self.regions.iter().zip(colors) {
             for shape in shapes {
@@ -525,23 +624,6 @@ impl Atlas {
                 raster.paint(lake, SEA, extent);
             }
         }
-        if layer == Layer::Stations {
-            for point in bulletin.stations.iter().rev() {
-                if let Some((where_, level)) = point.location.zip(point.level.index()) {
-                    raster.mark(where_, STATION + level, extent, image);
-                }
-            }
-        }
-        if let Some(where_) = bulletin.epicenter {
-            raster.mark(where_, EPICENTER, extent, image);
-        }
-
-        if !labels.is_empty() {
-            let cell = image_cell.unwrap_or((TEXT_CELL_WIDTH, TEXT_CELL_HEIGHT));
-            labels.sort_by_key(|&(_, level)| std::cmp::Reverse(level));
-            raster.place_labels(&labels, bulletin.epicenter, extent, cell, image);
-        }
-        view
     }
 }
 
@@ -827,6 +909,10 @@ pub fn plain(color: Color) -> char {
         SURROUNDINGS => '·',
         WARNING => '█',
         EPICENTER => '+',
+        TSUNAMI_MAJOR_WARNING => 'M',
+        TSUNAMI_WARNING => 'W',
+        TSUNAMI_ADVISORY => 'A',
+        TSUNAMI_FORECAST => 'F',
         value if value >= STATION => char::from(b"1234abcde"[(value - STATION) as usize]),
         value => char::from(b"1234abcde"[(value - REGION) as usize]),
     }
@@ -921,7 +1007,9 @@ mod tests {
         let initial = draw(&mut view);
         let center = view.rendered.unwrap().center;
         assert_eq!(view.rendered.unwrap().zoom_steps, EEW_AUTO_ZOOM_STEPS);
-        let target = atlas.event_bounds(std::slice::from_ref(&bulletin)).unwrap();
+        let target = atlas
+            .event_bounds(std::slice::from_ref(&bulletin), view.eew_layer)
+            .unwrap();
         assert_eq!(
             center,
             (

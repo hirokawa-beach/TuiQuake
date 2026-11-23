@@ -1,0 +1,95 @@
+name: Release binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-binaries-${{ github.ref }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            source: target/release/tuiquake.exe
+            asset: tuiquake-windows-x86_64.exe
+          - runner: ubuntu-22.04
+            source: target/release/tuiquake
+            asset: tuiquake-linux-x86_64
+          - runner: ubuntu-22.04-arm
+            source: target/release/tuiquake
+            asset: tuiquake-linux-aarch64
+          - runner: macos-15-intel
+            source: target/release/tuiquake
+            asset: tuiquake-macos-x86_64
+          - runner: macos-15
+            source: target/release/tuiquake
+            asset: tuiquake-macos-aarch64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Test and build
+        shell: bash
+        env:
+          SOURCE: ${{ matrix.source }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+          cargo +stable test --locked
+          cargo +stable build --release --locked
+          "./$SOURCE" --help
+          mkdir -p release-assets
+          cp "$SOURCE" "release-assets/$ASSET"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: release-assets/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: tuiquake-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rust-docs
+          rust_docs="$(rustc +stable --print sysroot)/share/doc/rust"
+          cp "$rust_docs/COPYRIGHT-library.html" release-assets/RUST-STDLIB-NOTICES.html
+          cp LICENSE release-assets/LICENSE.txt
+          cp THIRD_PARTY_NOTICES.txt release-assets/
+          cd release-assets
+          sha256sum tuiquake-* > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag --generate-notes \
+            tuiquake-* SHA256SUMS.txt LICENSE.txt THIRD_PARTY_NOTICES.txt RUST-STDLIB-NOTICES.html

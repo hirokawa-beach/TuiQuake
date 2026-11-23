@@ -12,6 +12,8 @@ use crate::{
     map::{Atlas, Raster, TEXT_CELL_HEIGHT, TEXT_CELL_WIDTH},
 };
 
+mod tsunami;
+
 pub struct Renderer {
     atlas: Atlas,
     pub(super) raster: Raster,
@@ -33,25 +35,15 @@ impl Renderer {
 
     fn render_map(
         &mut self,
-        bulletin: &Bulletin,
-        series: &[Bulletin],
-        layer: Layer,
-        view: View,
         map: Map,
         (map_cols, rows): (usize, usize),
+        draw: impl Fn(&Atlas, &mut Raster, Option<(usize, usize)>) -> View,
     ) -> bool {
         self.frame.map_view = None;
         if let Some(image) = map.image() {
             let (dx, dy) = image.cell();
             self.image_raster.resize(map_cols * dx, rows * dy);
-            let clamped = self.atlas.draw(
-                &mut self.image_raster,
-                bulletin,
-                series,
-                layer,
-                view,
-                Some((dx, dy)),
-            );
+            let clamped = draw(&self.atlas, &mut self.image_raster, Some((dx, dy)));
             self.frame.map_view = Some(clamped);
             match image {
                 Image::Sixel(_) => self.image_raster.sixel(&mut self.frame.graphic),
@@ -68,9 +60,7 @@ impl Renderer {
         if text_map {
             self.raster
                 .resize(map_cols * TEXT_CELL_WIDTH, rows * TEXT_CELL_HEIGHT);
-            let clamped = self
-                .atlas
-                .draw(&mut self.raster, bulletin, series, layer, view, None);
+            let clamped = draw(&self.atlas, &mut self.raster, None);
             self.frame.map_view.get_or_insert(clamped);
         }
         text_map
@@ -82,6 +72,8 @@ impl Renderer {
             bulletin: b,
             banner,
             eew_source,
+            warning_seconds,
+            demo,
             series,
             view,
             layer,
@@ -94,6 +86,7 @@ impl Renderer {
         } = scene;
         let framed = !menu.is_empty();
         let eew_panel = framed && b.eew;
+        let warned = b.has_eew_warning();
         let area_entries = eew_area_entries(b);
         let warning_missing = b
             .warning_areas
@@ -135,7 +128,14 @@ impl Renderer {
         if menu.is_empty() && history.is_none() {
             header = event_header(b, &status, width, display.colors);
         } else if eew_panel {
-            header.extend(eew_banner(b, width, display.colors));
+            header.extend(eew_banner(b, width, display.colors, demo));
+            if let Some(seconds) = warning_seconds {
+                header.extend(
+                    wrap(&format!("警報発表から {seconds}秒"), width)
+                        .into_iter()
+                        .map(|line| color(&line, INK, display.colors)),
+                );
+            }
             if !banner.is_empty() {
                 header.push(color(&fit(banner, width), MUTED, display.colors));
             }
@@ -162,24 +162,65 @@ impl Renderer {
         let mut aside = Vec::new();
         if history.is_none() && !eew_panel {
             if let Some((title, areas)) = &area_entries {
-                aside.push(((*title).into(), if b.warning { ALERT } else { ACCENT }));
+                aside.push(ReadingLine::Text(
+                    title.clone(),
+                    if warned { ALERT } else { ACCENT },
+                ));
                 if warning_missing > 0 {
-                    aside.push((format!("地図にない地域 {warning_missing}件"), MUTED));
+                    aside.push(ReadingLine::Text(
+                        format!("地図にない地域 {warning_missing}件"),
+                        MUTED,
+                    ));
                 }
-                aside.extend(areas.iter().cloned());
+                aside.extend(areas.iter().cloned().map(ReadingLine::from));
             } else if b.has_observations() {
-                aside.push((observation_label(layer).into(), MUTED));
-                aside.extend(readings(b, layer, station_grouping));
+                aside.push(ReadingLine::Text(observation_label(layer).into(), MUTED));
+                let reading_width = if sidebar_width == 0 {
+                    width
+                } else if framed {
+                    sidebar_width - TEXT_FRAME_MARGIN
+                } else {
+                    sidebar_width
+                };
+                aside.extend(readings(b, layer, station_grouping, reading_width));
             }
         }
         let mut legend = Vec::new();
+        let forecast_map = b.eew && !b.eew_cancelled && view.eew_layer == map::EewLayer::Forecast;
         if b.epicenter.is_some() {
-            legend.push(('✚', if b.eew { "推定震央" } else { "震央" }, map::EPICENTER));
+            let label = if b.plum_assumed_hypocenter {
+                "仮定震央"
+            } else if b.eew {
+                "推定震央"
+            } else {
+                "震央"
+            };
+            legend.push(('✚', label, map::EPICENTER));
         }
-        if !b.warning_areas.is_empty() {
+        if !forecast_map && !b.warning_areas.is_empty() {
             legend.push(('■', "警報対象", map::WARNING));
         }
-        if b.has_observations() && (display.colors || layer == Layer::Regions) {
+        let mut forecast_levels = [false; INTENSITIES.len()];
+        if forecast_map {
+            for area in &b.forecast_areas {
+                if let Some(level) = area
+                    .display_level()
+                    .filter(|_| self.atlas.has_area(&area.name))
+                {
+                    forecast_levels[level as usize] = true;
+                }
+            }
+            legend.extend(
+                map::SHORT_INTENSITIES
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| forecast_levels[*index])
+                    .map(|(index, label)| ('■', *label, map::REGION + index as u8)),
+            );
+        }
+        if b.has_observations()
+            && (layer == Layer::Regions || (display.colors && display.map.image().is_some()))
+        {
             let (glyph, start) = if layer == Layer::Regions {
                 ('■', map::REGION)
             } else {
@@ -224,6 +265,22 @@ impl Renderer {
         if !line.is_empty() {
             footer.push(line);
         }
+        if forecast_map {
+            let note = if forecast_levels.contains(&true) {
+                if demo {
+                    "架空の推定震度 · 範囲は上限色、下限のみは下限色"
+                } else {
+                    "気象庁の推定震度 · 範囲は上限色、下限のみは下限色"
+                }
+            } else {
+                "地図に表示できる推定震度なし"
+            };
+            footer.extend(
+                wrap(note, width)
+                    .into_iter()
+                    .map(|line| color(&line, MUTED, display.colors)),
+            );
+        }
         if split {
             // Reserve the same space for the legend even when observations are unavailable.
             let full_width = "震央".width()
@@ -240,7 +297,7 @@ impl Renderer {
                 &fit(
                     &aside
                         .iter()
-                        .map(|(line, _)| line.as_str())
+                        .map(|line| line.render(width, false))
                         .collect::<Vec<_>>()
                         .join("  /  "),
                     width,
@@ -269,8 +326,15 @@ impl Renderer {
                     eew_source,
                 ));
             } else {
-                let intensity = b.maximum.as_ref().map_or("不明", short_intensity_label);
+                let badge_level = b.maximum.as_ref().and_then(Level::forecast_badge);
+                let intensity = badge_level
+                    .as_ref()
+                    .or(b.maximum.as_ref())
+                    .map_or("不明", short_intensity_label);
                 let mut summary = format!("推定最大 {intensity}");
+                if b.plum_assumed_hypocenter {
+                    summary = format!("{PLUM_HYPOCENTER} · {summary}");
+                }
                 if let Some(source) = eew_source {
                     write!(summary, " · {source}").unwrap();
                 }
@@ -284,7 +348,7 @@ impl Renderer {
                     eew_area_panel(
                         title,
                         areas,
-                        b.warning,
+                        warned,
                         warning_missing,
                         width,
                         area_height,
@@ -300,8 +364,10 @@ impl Renderer {
             .rows
             .saturating_sub(header.len() + footer.len() + map_edges + 1)
             .clamp(1, 60);
-        let text_map = self.render_map(b, series, layer, view, display.map, (map_cols, rows));
-        let map_border = Border::new(map_cols + 2, FRAME, display.colors);
+        let text_map = self.render_map(display.map, (map_cols, rows), |atlas, raster, cell| {
+            atlas.draw(raster, b, series, layer, view, cell)
+        });
+        let map_border = Border::new(map_cols + 2, display.colors);
         let sidebar = if sidebar_width == 0 {
             Vec::new()
         } else if eew_panel {
@@ -325,7 +391,7 @@ impl Renderer {
                 panels.extend(eew_area_panel(
                     title,
                     areas,
-                    b.warning,
+                    warned,
                     warning_missing,
                     sidebar_width,
                     remaining,
@@ -344,7 +410,7 @@ impl Renderer {
         } else {
             let title = aside
                 .first()
-                .map(|(label, _)| label.clone())
+                .map(|line| line.render(sidebar_width, false))
                 .unwrap_or_default();
             let capacity = rows;
             if framed && !aside.is_empty() {
@@ -353,7 +419,7 @@ impl Renderer {
             if aside.len() > capacity {
                 let omitted = aside.len() - capacity + 1;
                 aside.truncate(capacity - 1);
-                aside.push((format!("ほか {omitted} 件"), MUTED));
+                aside.push(ReadingLine::Text(format!("ほか {omitted} 件"), MUTED));
             }
             if framed && aside.is_empty() && title.is_empty() {
                 Vec::new()
@@ -361,11 +427,14 @@ impl Renderer {
                 let inner = sidebar_width - if framed { TEXT_FRAME_MARGIN } else { 0 };
                 let lines = aside
                     .into_iter()
-                    .map(|(line, rgb)| color(&fit(&line, inner), rgb, display.colors))
+                    .map(|line| line.render(inner, display.colors))
                     .collect();
                 if framed {
-                    let tone = if b.warning { FRAME_ALERT } else { FRAME };
-                    Border::new(sidebar_width, tone, display.colors).text(lines, &title, rows + 2)
+                    Border::notice(sidebar_width, display.colors, b.warning).text(
+                        lines,
+                        &title,
+                        rows + 2,
+                    )
                 } else {
                     lines
                 }
@@ -383,7 +452,7 @@ impl Renderer {
         }
         let mut next_side = sidebar.iter();
         let edge = map_border.edge();
-        let map_label = format!(
+        let mut map_label = format!(
             "地図 · {}  {:.1}x",
             if view.national {
                 "全国"
@@ -392,6 +461,9 @@ impl Renderer {
             },
             self.frame.map_view.as_ref().map_or(1.0, View::zoom_factor),
         );
+        if b.eew && !b.eew_cancelled {
+            write!(map_label, " · {}", view.eew_layer.label()).unwrap();
+        }
         for y in 0..rows + map_edges {
             if framed && y == 0 {
                 text.push_str(&map_border.top(&map_label));

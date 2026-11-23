@@ -71,13 +71,21 @@ impl HelpTopic {
             Self::Eew { active } => {
                 let mut bindings = vec![("I", "受信した速報の文字詳細を開く")];
                 if active {
+                    bindings.push(("V", "警報対象・推定震度の地図を切り替え"));
                     bindings.extend(MAP_BINDINGS);
                 }
                 ("EEWの操作", bindings)
             }
             Self::Tsunami => (
                 "津波の操作",
-                vec![("↑ / ↓", "津波情報をスクロール"), ("R", "津波情報を更新")],
+                vec![
+                    ("↑ / ↓", "津波情報をスクロール"),
+                    ("R", "津波情報を更新"),
+                    ("WASD", "地図を移動"),
+                    ("+ / -", "拡大・縮小"),
+                    ("Z", "全国・対象沿岸を切り替え"),
+                    ("0", "位置と倍率を戻す"),
+                ],
             ),
             Self::Demo { eew } => {
                 let mut bindings = vec![("↑ / ↓", "デモの報を選ぶ"), ("Space", "再生・停止")];
@@ -85,6 +93,7 @@ impl HelpTopic {
                     bindings.extend([
                         ("← / →", "推定最大震度を変更"),
                         ("F", "予報・警報を切り替え"),
+                        ("V", "警報対象・推定震度の地図を切り替え"),
                     ]);
                 }
                 bindings.extend([

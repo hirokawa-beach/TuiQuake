@@ -1,4 +1,117 @@
 use super::{panels::*, raster::*, *};
+
+#[test]
+fn tsunami_map_draws_confirmed_coasts_and_keeps_details_on_a_narrow_screen() {
+    use crate::data::{TsunamiArea, TsunamiLevel};
+
+    let mut renderer = Renderer::new().unwrap();
+    let areas = [
+        TsunamiArea {
+            code: "210".into(),
+            name: "岩手県".into(),
+            level: TsunamiLevel::Warning,
+            details: "  3m  第1波 到達と推定".into(),
+        },
+        TsunamiArea {
+            code: "220".into(),
+            name: "宮城県".into(),
+            level: TsunamiLevel::Advisory,
+            details: "  1m".into(),
+        },
+    ];
+    let lines: Vec<_> = areas.iter().map(TsunamiArea::line).collect();
+    let menu = ["TuiQuake · 津波".into()];
+    let badge = "\x1b[48;2;255;74;83m";
+    let name = "\x1b[38;2;255;74;83m岩手県";
+    for (columns, map) in [(105, Map::Image(Image::Kitty)), (42, Map::Braille)] {
+        let display = Display {
+            columns,
+            rows: 24,
+            colors: true,
+            map,
+        };
+        let notice = NoticePanel {
+            title: "津波情報",
+            status: "津波警報・注意報 発表中",
+            alert: true,
+            lines: &lines,
+            notes: &[],
+        };
+        let frame = renderer.tsunami(&menu, notice, &areas, display, View::new(false), &mut 0);
+        assert!(frame.text.contains("岩手県") && frame.text.contains("第1波"));
+        assert!(frame.text.contains("宮城県"));
+        assert!(frame.text.contains(badge) && frame.text.contains(name));
+        assert!(frame.text.lines().count() <= display.rows);
+        assert!(
+            frame
+                .text
+                .lines()
+                .all(|line| styled_width(line) <= display.width())
+        );
+        let raster = if map.image().is_some() {
+            &renderer.image_raster
+        } else {
+            &renderer.raster
+        };
+        assert!(
+            raster
+                .pixels
+                .contains(&map::tsunami_color(TsunamiLevel::Warning).unwrap())
+        );
+        assert!(
+            raster
+                .pixels
+                .contains(&map::tsunami_color(TsunamiLevel::Advisory).unwrap())
+        );
+        assert!(raster.pixels.contains(&map::LAND));
+
+        let reference = NoticePanel {
+            title: "津波情報",
+            status: "現在の津波の発表状況は未確認",
+            alert: false,
+            lines: &lines,
+            notes: &[],
+        };
+        let frame = renderer.tsunami(&menu, reference, &[], display, View::new(true), &mut 0);
+        assert!(frame.text.contains("未確認") && frame.text.contains("岩手県"));
+        assert!(!frame.text.contains(badge) && !frame.text.contains(name));
+        let raster = if map.image().is_some() {
+            &renderer.image_raster
+        } else {
+            &renderer.raster
+        };
+        assert!(
+            !raster
+                .pixels
+                .iter()
+                .any(|&pixel| pixel >= map::TSUNAMI_FORECAST)
+        );
+    }
+
+    for colors in [true, false] {
+        let display = Display {
+            columns: 42,
+            rows: 8,
+            colors,
+            map: Map::Braille,
+        };
+        let notice = NoticePanel {
+            title: "津波情報",
+            status: "津波警報・注意報 発表中",
+            alert: true,
+            lines: &lines,
+            notes: &[],
+        };
+        let frame = renderer.tsunami(&menu, notice, &areas, display, View::new(true), &mut 0);
+        assert!(frame.map_view.is_none() && frame.graphic.is_empty());
+        assert!(frame.text.contains("岩手県"));
+        assert_eq!(
+            frame.text.contains(badge) && frame.text.contains(name),
+            colors
+        );
+        assert_eq!(frame.text.contains('\x1b'), colors);
+    }
+}
 use crate::graphics::{self, Image};
 
 #[test]
@@ -329,9 +442,61 @@ fn interactive_eew_keeps_overview_and_warning_regions_separate() {
 }
 
 #[test]
+fn eew_forecast_renders_previous_warning_areas_and_uses_the_upper_badge() {
+    let mut renderer = Renderer::new().unwrap();
+    let mut bulletin = crate::data::demo().remove(1);
+    bulletin.warning = false;
+    bulletin.maximum = Some(Level::Other("震度6弱から6強程度".into()));
+    bulletin.forecast_areas.clear();
+    let menu = ["TuiQuake".into()];
+    let display = Display {
+        columns: 100,
+        rows: 30,
+        colors: true,
+        map: Map::Image(Image::Kitty),
+    };
+    let frame = renderer.render(
+        Scene {
+            menu: &menu,
+            ..Scene::single(&bulletin, false, "")
+        },
+        display,
+    );
+    assert!(frame.text.contains("緊急地震速報（予報）"));
+    assert!(
+        frame
+            .text
+            .lines()
+            .nth(1)
+            .unwrap()
+            .contains("\x1b[48;2;255;97;98m")
+    );
+    assert!(frame.text.contains("警報対象地域 7"));
+    assert!(frame.text.contains("宮城県北部"));
+    assert!(frame.text.contains("震度6弱から6強程度"));
+    let upper_badge = super::panels::intensity_badge_rows(&Level::Known(7), true).unwrap();
+    assert!(upper_badge.iter().all(|row| frame.text.contains(row)));
+    assert!(renderer.image_raster.pixels.contains(&map::WARNING));
+    for label in ["4程度以上", "震度４以上", "４程度"] {
+        assert_eq!(
+            Level::Other(label.into()).forecast_badge().unwrap().label(),
+            "4"
+        );
+    }
+    assert_eq!(
+        Level::Other("震度０〜震度４程度".into())
+            .forecast_badge()
+            .unwrap()
+            .label(),
+        "4"
+    );
+}
+
+#[test]
 fn eew_banner_wraps_narrow_forecasts_and_does_not_color_cancellations() {
     let mut bulletin = crate::data::demo().remove(1);
     bulletin.warning = false;
+    bulletin.warning_areas.clear();
     let rows = eew_banner(&bulletin, 20, true, false);
     assert_eq!(rows.len(), 2);
     assert!(rows[0].contains("緊急地震速報（予報）"));
@@ -343,6 +508,85 @@ fn eew_banner_wraps_narrow_forecasts_and_does_not_color_cancellations() {
     bulletin.eew_cancelled = true;
     let rows = eew_banner(&bulletin, 48, true, false);
     assert_eq!(rows[0].trim(), "緊急地震速報（取消） 第2報");
+}
+
+#[test]
+fn eew_predictions_sort_by_upper_tier_then_prefer_single_values() {
+    use crate::data::ForecastArea;
+
+    let bulletin = crate::data::Bulletin {
+        forecast_areas: [(3, 4, "A"), (4, 5, "B"), (4, 4, "C"), (5, 5, "D")]
+            .into_iter()
+            .map(|(low, high, name)| ForecastArea {
+                name: name.into(),
+                minimum: Some(Level::Known(low)),
+                maximum: Some(Level::Known(high)),
+            })
+            .collect(),
+        ..crate::data::Bulletin::default()
+    };
+    let (_, rows) = super::panels::eew_area_entries(&bulletin).unwrap();
+    for ((row, _), (value, name)) in
+        rows.iter()
+            .zip([("5+", "D"), ("5-〜5+", "B"), ("5-", "C"), ("4〜5-", "A")])
+    {
+        assert!(row.starts_with(value) && row.ends_with(name), "{row}");
+    }
+}
+
+#[test]
+fn eew_assumed_hypocenter_replaces_magnitude_and_depth_in_each_view() {
+    let mut bulletin = crate::data::demo().remove(1);
+    bulletin.plum_assumed_hypocenter = true;
+    bulletin.magnitude = "1.0".into();
+    bulletin.depth = Some(10);
+    for (width, height) in [(48, 10), (34, 8), (20, 3)] {
+        let overview = eew_overview(&bulletin, width, height, false, None).join("\n");
+        assert!(
+            overview.contains(plum_hypocenter_label(width - TEXT_FRAME_MARGIN)),
+            "{overview}"
+        );
+        assert!(
+            !overview.contains("M1.0") && !overview.contains("深さ"),
+            "{overview}"
+        );
+    }
+    let details = event_facts(&bulletin, 60, false).join("\n");
+    assert!(details.contains(PLUM_HYPOCENTER));
+    assert!(!details.contains("M1.0") && !details.contains("深さ"));
+    bulletin.plum_assumed_hypocenter = false;
+    assert!(
+        event_facts(&bulletin, 60, false)
+            .join("\n")
+            .contains("M1.0")
+    );
+}
+
+#[test]
+fn eew_forecast_map_uses_published_intensity_colors_and_keeps_warning_list() {
+    let mut renderer = Renderer::new().unwrap();
+    let bulletin = crate::data::demo().remove(1);
+    let mut view = View::new(false);
+    view.eew_layer = map::EewLayer::Forecast;
+    let menu = ["TuiQuake".into()];
+    let display = Display {
+        columns: 100,
+        rows: 30,
+        colors: true,
+        map: Map::Image(Image::Kitty),
+    };
+    let frame = renderer.render(
+        Scene {
+            menu: &menu,
+            view,
+            ..Scene::single(&bulletin, false, "")
+        },
+        display,
+    );
+    assert!(frame.text.contains("震源周辺") && frame.text.contains("範囲は上限色"));
+    assert!(frame.text.contains("警報対象地域 7"));
+    assert!(renderer.image_raster.pixels.contains(&(map::REGION + 5)));
+    assert!(!renderer.image_raster.pixels.contains(&map::WARNING));
 }
 
 #[test]
@@ -960,7 +1204,8 @@ fn help_is_centered_and_only_shows_actions_for_the_current_tab() {
         .lines
         .join("\n");
     assert!(tsunami.contains("津波の操作") && tsunami.contains("津波情報を更新"));
-    assert!(!tsunami.contains("WASD") && !tsunami.contains("地震情報を更新"));
+    assert!(tsunami.contains("WASD") && tsunami.contains("全国・対象沿岸"));
+    assert!(!tsunami.contains("地震情報を更新"));
 
     let narrow = Display {
         columns: 21,

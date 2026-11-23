@@ -106,6 +106,8 @@ fn read_quake(packet: &Value) -> Option<Report> {
 }
 
 fn tsunami(packet: &Value) -> Result<Tsunami> {
+    use super::{TsunamiArea, TsunamiLevel};
+
     let issue = parse_time(text(&packet["issue"]["time"])).ok_or("津波発表時刻が不正です")?;
     let cancelled = packet["cancelled"]
         .as_bool()
@@ -117,26 +119,31 @@ fn tsunami(packet: &Value) -> Result<Tsunami> {
                 return None;
             }
             let level = match text(&area["grade"]) {
-                "MajorWarning" => "大津波警報",
-                "Warning" => "津波警報",
-                "Watch" => "津波注意報",
-                _ => "区分不明",
+                "MajorWarning" => TsunamiLevel::MajorWarning,
+                "Warning" => TsunamiLevel::Warning,
+                "Watch" => TsunamiLevel::Advisory,
+                _ => TsunamiLevel::Unknown,
             };
-            let mut line = format!("{level}  {name}");
+            let mut details = String::new();
             let height = text(&area["maxHeight"]["description"]);
             let first = &area["firstHeight"];
             let condition = text(&first["condition"]);
             if !height.is_empty() {
-                line.push_str(&format!("  {height}"));
+                details.push_str(&format!("  {height}"));
             }
             if !condition.is_empty() {
-                line.push_str(&format!("  第1波 {condition}"));
+                details.push_str(&format!("  第1波 {condition}"));
             } else if let Some(at) = parse_time(text(&first["arrivalTime"])) {
-                line.push_str(&format!("  第1波 {} JST", at.format("%m/%d %H:%M")));
+                details.push_str(&format!("  第1波 {} JST", at.format("%m/%d %H:%M")));
             } else if area["immediate"].as_bool() == Some(true) {
-                line.push_str("  第1波 直ちに来襲と予測");
+                details.push_str("  第1波 直ちに来襲と予測");
             }
-            Some(line)
+            Some(TsunamiArea {
+                code: String::new(),
+                name: name.into(),
+                level,
+                details,
+            })
         })
         .collect();
     Ok(Tsunami {
@@ -194,9 +201,8 @@ fn eew(packet: &Value) -> Result<Option<Bulletin>> {
     bulletin.name = text(&hypocenter["name"]).into();
     bulletin.origin = parse_time(text(&quake["originTime"]));
     bulletin.epicenter = epicenter(&hypocenter["longitude"], &hypocenter["latitude"]);
-    if text(&quake["condition"]) == "仮定震源要素" {
-        bulletin.comment = "仮定震源要素".into();
-    } else {
+    bulletin.plum_assumed_hypocenter = text(&quake["condition"]) == "仮定震源要素";
+    if !bulletin.plum_assumed_hypocenter {
         bulletin.magnitude = magnitude(&hypocenter["magnitude"]).unwrap_or_default();
         bulletin.depth = depth(&hypocenter["depth"]);
     }
@@ -467,7 +473,7 @@ mod tests {
         };
         assert_eq!(report.provider, Provider::P2p);
         assert!(!report.alert() && report.valid_until.is_none());
-        assert_eq!(report.areas, ["津波警報  岩手県  3m"]);
+        assert_eq!(report.areas[0].line(), "津波警報  岩手県  3m");
         assert!(matches!(
             decode(&json!({"code":552})),
             Some(LiveUpdate::TsunamiInvalid(_))
@@ -490,6 +496,13 @@ mod tests {
             Some(4)
         );
         assert!(report.forecast_areas[0].maximum.is_none() && report.maximum.is_none());
+        packet["earthquake"] = json!({
+            "condition": "仮定震源要素",
+            "hypocenter": {"name":"岩手県沿岸南部", "magnitude":1.0, "depth":10}
+        });
+        let report = eew(&packet).unwrap().unwrap();
+        assert!(report.plum_assumed_hypocenter);
+        assert!(report.magnitude.is_empty() && report.depth.is_none());
         packet["cancelled"] = true.into();
         assert!(eew(&packet).unwrap().unwrap().eew_cancelled);
         packet["test"] = true.into();

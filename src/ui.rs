@@ -22,7 +22,7 @@ use crate::{
     },
     eew,
     graphics::{self, Capabilities, Image, KITTY_COMMAND, Map, MapMode},
-    map::{self, Layer, View},
+    map::{self, EewLayer, Layer, View},
     screen::{
         self, APP_NAME, AboutInfo, Display, FeedStatus, Frame, HelpOverlay, HelpTopic, History,
         MIN_SPLIT_WIDTH, MenuNotice, QuakeNotices, Renderer, Scene,
@@ -359,6 +359,12 @@ mod tests {
             .unwrap();
         assert!(app.update(now));
         assert!(app.eew.active().unwrap().warning);
+        assert!(app.select(KeyCode::Char('2'), 100, now));
+        assert_eq!(app.eew_layer, EewLayer::Warning);
+        assert!(app.select(KeyCode::Char('v'), 100, now));
+        assert_eq!(app.eew_layer, EewLayer::Forecast);
+        assert!(app.select(KeyCode::Char('v'), 100, now));
+        assert_eq!(app.eew_layer, EewLayer::Warning);
     }
 
     #[test]
@@ -578,6 +584,8 @@ pub struct App {
     scroll: usize,
     reading_start: usize,
     pub view: View,
+    tsunami_view: View,
+    eew_layer: EewLayer,
     layer: Layer,
     station_grouping: StationGrouping,
     history_rows: usize,
@@ -613,6 +621,8 @@ impl App {
             scroll: 0,
             reading_start: 0,
             view: View::new(national),
+            tsunami_view: View::new(true),
+            eew_layer: EewLayer::default(),
             layer: Layer::default(),
             station_grouping: StationGrouping::default(),
             history_rows: DEFAULT_HISTORY_ROWS,
@@ -699,6 +709,14 @@ impl App {
         self.scroll = 0;
     }
 
+    fn map_view_mut(&mut self) -> &mut View {
+        if self.tab == Tab::Tsunami {
+            &mut self.tsunami_view
+        } else {
+            &mut self.view
+        }
+    }
+
     fn select(&mut self, key: KeyCode, width: usize, now: Instant) -> bool {
         let help_key = matches!(key, KeyCode::Char('h' | 'H' | 'ｈ' | 'Ｈ' | '?' | '？'));
         if let Some(scroll) = &mut self.help_scroll {
@@ -760,6 +778,15 @@ impl App {
                     Page::Text
                 };
                 self.scroll = 0;
+            }
+            KeyCode::Char('v')
+                if self.page == Page::Map
+                    && matches!(self.tab, Tab::Eew | Tab::Demo)
+                    && self
+                        .current()
+                        .is_some_and(|(report, _)| report.eew && !report.eew_cancelled) =>
+            {
+                self.eew_layer = self.eew_layer.other();
             }
             KeyCode::Char('v')
                 if self.page != Page::List
@@ -858,17 +885,17 @@ impl App {
                     data::set_demo_intensity(bulletin, next as u8);
                 }
             }
-            _ if self.tab == Tab::Tsunami && key != KeyCode::Char('r') => {
-                return false;
+            KeyCode::Char('z') => {
+                let view = self.map_view_mut();
+                *view = View::new(!view.national);
             }
-            KeyCode::Char('z') => self.view = View::new(!self.view.national),
-            KeyCode::Char('+' | '=' | ';') => return self.view.zoom_by(1),
-            KeyCode::Char('-') => return self.view.zoom_by(-1),
-            KeyCode::Char('w') => return self.view.pan(0.0, 0.18),
-            KeyCode::Char('a') => return self.view.pan(-0.18, 0.0),
-            KeyCode::Char('s') => return self.view.pan(0.0, -0.18),
-            KeyCode::Char('d') => return self.view.pan(0.18, 0.0),
-            KeyCode::Char('0') => self.view.reset(),
+            KeyCode::Char('+' | '=' | ';') => return self.map_view_mut().zoom_by(1),
+            KeyCode::Char('-') => return self.map_view_mut().zoom_by(-1),
+            KeyCode::Char('w') => return self.map_view_mut().pan(0.0, 0.18),
+            KeyCode::Char('a') => return self.map_view_mut().pan(-0.18, 0.0),
+            KeyCode::Char('s') => return self.map_view_mut().pan(0.0, -0.18),
+            KeyCode::Char('d') => return self.map_view_mut().pan(0.18, 0.0),
+            KeyCode::Char('0') => self.map_view_mut().reset(),
             KeyCode::Char('r') if matches!(self.tab, Tab::Quake | Tab::Tsunami) => {
                 let query = match self.tab {
                     Tab::Tsunami => LiveQuery::Tsunami,
@@ -1154,6 +1181,9 @@ impl App {
                 (Tab::Eew, Some(bulletin)) if bulletin.warning => {
                     ("EEW 警報", Some(MenuNotice::Warning))
                 }
+                (Tab::Eew, Some(bulletin)) if bulletin.has_eew_warning() => {
+                    ("EEW 警報あり", Some(MenuNotice::Warning))
+                }
                 (Tab::Eew, Some(_)) => ("EEW 予報", Some(MenuNotice::Forecast)),
                 _ => (tab.label(), None),
             };
@@ -1192,7 +1222,8 @@ impl App {
         }
         if self.tab == Tab::Tsunami {
             let (status, alert, lines, notes) = self.tsunami_display();
-            let frame = screen::panel(
+            let mut scroll = self.scroll;
+            let frame = renderer.tsunami(
                 &menu,
                 screen::NoticePanel {
                     title: "津波情報",
@@ -1201,10 +1232,18 @@ impl App {
                     lines: &lines,
                     notes: &notes,
                 },
+                self.tsunami_map_areas(),
                 display,
-                &mut self.scroll,
+                self.tsunami_view,
+                &mut scroll,
             );
-            return Ok(draw(&frame)?);
+            self.scroll = scroll;
+            if overlay.is_none()
+                && let Some(view) = frame.map_view
+            {
+                self.tsunami_view = view;
+            }
+            return Ok(draw(frame)?);
         }
         if self.tab == Tab::Eew && self.eew.active().is_none() {
             let (status, notes) = self.idle_eew_display();
@@ -1279,6 +1318,7 @@ impl App {
                 &["B 履歴", "↑↓ 選択", "V 地域別/観測点"]
             }
             Tab::Quake => &["↑↓ 選択", "←→ 震度一覧", "V 地域別/観測点"],
+            Tab::Eew if !bulletin.eew_cancelled => &["V 地図表示"],
             Tab::Demo => {
                 let playback = if self.demo.next.is_some() {
                     "Space 停止"
@@ -1296,6 +1336,13 @@ impl App {
             &[] as &[Bulletin]
         };
         let live_eew = self.tab == Tab::Eew;
+        let eew_source = live_eew.then(|| format!("気象庁発表 · {}", bulletin.provider.label()));
+        let mut view = self.view;
+        view.eew_layer = if bulletin.eew {
+            self.eew_layer
+        } else {
+            EewLayer::Warning
+        };
         let scene = Scene {
             bulletin: &bulletin,
             banner: if live_eew {
@@ -1307,11 +1354,11 @@ impl App {
             } else {
                 &banner
             },
-            eew_source: live_eew.then_some(bulletin.provider.label()),
+            eew_source: eew_source.as_deref(),
             warning_seconds: if live_eew { self.warning_seconds } else { None },
             demo: self.tab == Tab::Demo,
             series,
-            view: self.view,
+            view,
             layer: self.layer,
             station_grouping: self.station_grouping,
             controls: &controls,
@@ -1357,6 +1404,17 @@ impl App {
         })
     }
 
+    fn tsunami_map_areas(&self) -> &[data::TsunamiArea] {
+        self.confirmed_tsunami()
+            .filter(|report| {
+                matches!(
+                    report.status,
+                    TsunamiStatus::Alert | TsunamiStatus::Forecast
+                )
+            })
+            .map_or(&[], |report| report.areas.as_slice())
+    }
+
     fn feed_status(&self) -> FeedStatus {
         let backup = self.provider == Provider::P2p;
         let connection = match (self.connected, backup) {
@@ -1370,6 +1428,7 @@ impl App {
         let eew = match self.eew.active() {
             Some(report) if report.eew_cancelled => ("EEW 取消", None),
             Some(report) if report.warning => ("EEW 警報", Some(MenuNotice::Warning)),
+            Some(report) if report.has_eew_warning() => ("EEW 警報あり", Some(MenuNotice::Warning)),
             Some(_) => ("EEW 予報", Some(MenuNotice::Forecast)),
             None if quiet && backup => ("EEW 警報なし", None),
             None if quiet => ("EEW なし", None),
@@ -1431,11 +1490,11 @@ impl App {
         let confirmed = self.confirmed_tsunami();
         let status = match confirmed {
             Some(report) if report.status == TsunamiStatus::Alert => {
-                areas.extend(report.areas.iter().cloned());
+                areas.extend(report.areas.iter().map(data::TsunamiArea::line));
                 "津波警報・注意報 発表中"
             }
             Some(report) if report.status == TsunamiStatus::Forecast => {
-                areas.extend(report.areas.iter().cloned());
+                areas.extend(report.areas.iter().map(data::TsunamiArea::line));
                 "津波予報 発表中"
             }
             Some(_) => "現在、津波の発表はありません",
@@ -1452,7 +1511,7 @@ impl App {
                 "参考 · P2Pが受信した発表内容"
             };
             areas.push(label.into());
-            areas.extend(report.areas.iter().cloned());
+            areas.extend(report.areas.iter().map(data::TsunamiArea::line));
         }
         if let Some(report) = &self.tsunami.wolfx {
             if report.status == TsunamiStatus::Expired {

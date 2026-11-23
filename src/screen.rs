@@ -248,6 +248,16 @@ fn depth_label(km: u32) -> String {
     }
 }
 
+const PLUM_HYPOCENTER: &str = "PLUM法による仮定震源";
+
+fn plum_hypocenter_label(width: usize) -> &'static str {
+    if width >= PLUM_HYPOCENTER.width() {
+        PLUM_HYPOCENTER
+    } else {
+        "PLUM仮定震源"
+    }
+}
+
 fn magnitude_and_depth(bulletin: &Bulletin) -> String {
     let mut facts = Vec::new();
     if !bulletin.magnitude.is_empty() {
@@ -356,7 +366,11 @@ fn event_facts(b: &Bulletin, width: usize, ansi: bool) -> Vec<String> {
     } else {
         header.push(color(&fit(name, width), INK, ansi));
     }
-    let facts = magnitude_and_depth(b);
+    let facts = if b.plum_assumed_hypocenter {
+        plum_hypocenter_label(width).to_owned()
+    } else {
+        magnitude_and_depth(b)
+    };
     if !facts.is_empty() {
         header.push(color(&fit(&facts, width), MUTED, ansi));
     }

@@ -19,7 +19,9 @@ struct ActiveReport {
 struct ReceivedEvent {
     id: String,
     announced: bool,
-    warned: bool,
+    cancelled: bool,
+    warning_issued: Option<Stamp>,
+    warning_areas: Vec<String>,
 }
 
 fn report_order(report: &Bulletin) -> (Option<Stamp>, Option<u64>, bool, bool) {
@@ -34,7 +36,7 @@ fn report_order(report: &Bulletin) -> (Option<Stamp>, Option<u64>, bool, bool) {
 #[derive(Default)]
 pub struct State {
     clock: Option<ServerClock>,
-    waiting: Option<Box<Bulletin>>,
+    waiting: Vec<Bulletin>,
     active: Option<ActiveReport>,
     last: Option<(Option<Stamp>, Option<u64>, bool, bool)>,
     seen: VecDeque<ReceivedEvent>,
@@ -61,17 +63,13 @@ impl State {
     }
 
     pub fn warning_seconds(&self, now: Instant) -> Option<u64> {
-        let report = self
-            .active
-            .as_ref()
-            .filter(|report| report.bulletin.warning && !report.bulletin.eew_cancelled)?;
-        Some(
-            ACTIVE_FOR
-                .to_std()
-                .ok()?
-                .saturating_sub(report.expires.saturating_duration_since(now))
-                .as_secs(),
-        )
+        let report = self.active.as_ref()?;
+        let issued = report.bulletin.issued?;
+        let warning = report.bulletin.eew_warning_issued?;
+        let remaining =
+            chrono::TimeDelta::from_std(report.expires.saturating_duration_since(now)).ok()?;
+        let age = ACTIVE_FOR - remaining;
+        Some((age + (issued - warning)).num_seconds().max(0) as u64)
     }
 
     fn remember(&mut self, issued: Stamp, expired: bool) {
@@ -94,29 +92,42 @@ impl State {
 
     pub fn switch_source(&mut self) {
         self.disconnect();
-        self.waiting = None;
+        self.waiting.clear();
         self.notice = None;
     }
 
     pub fn sync(&mut self, clock: ServerClock, now: Instant) -> bool {
         self.clock = Some(clock);
-        self.waiting
-            .take()
-            .is_some_and(|report| self.receive(report, now))
+        let mut waiting = std::mem::take(&mut self.waiting);
+        waiting.sort_by_key(report_order);
+        let mut changed = false;
+        for report in waiting {
+            changed |= self.receive(Box::new(report), now);
+        }
+        changed
     }
 
     pub fn invalid(&mut self, reason: &str) -> bool {
         self.note(format!("EEWを読み取れません · {reason}"), true)
     }
 
-    pub fn receive(&mut self, report: Box<Bulletin>, now: Instant) -> bool {
+    pub fn receive(&mut self, mut report: Box<Bulletin>, now: Instant) -> bool {
         let order = report_order(&report);
-        if self.last.is_some_and(|prior| prior >= order)
-            || self
-                .waiting
-                .as_ref()
-                .is_some_and(|prior| report_order(prior) >= order)
-        {
+        let newer = self.last.is_none_or(|prior| prior < order);
+        let event_id = report.eew_event_id.as_deref();
+        let same_event = event_id.is_some()
+            && self.active().is_some_and(|active| {
+                !active.eew_cancelled && active.eew_event_id.as_deref() == event_id
+            });
+        // A warning can arrive after a newer forecast for the same event.
+        let late_warning = same_event && report.has_eew_warning();
+        // Cancellation is keyed by event, regardless of the report number.
+        let known_cancellation = report.eew_cancelled
+            && self
+                .seen
+                .iter()
+                .any(|event| Some(event.id.as_str()) == event_id && !event.cancelled);
+        if !newer && !late_warning && !known_cancellation {
             return false;
         }
         let Some(issued) = report.issued else {
@@ -128,11 +139,17 @@ impl State {
                 "EEW受信 · {}の時刻を待っています（発表 {stamp} JST）",
                 report.provider.label()
             );
-            self.waiting = Some(report);
+            if self.waiting.len() == 64 {
+                self.waiting.remove(0);
+            }
+            self.waiting.push(*report);
             return self.note(message, true);
         };
         let age = clock.at(now).signed_duration_since(issued);
-        if age >= ACTIVE_FOR {
+        if age >= ACTIVE_FOR && !known_cancellation {
+            if !newer {
+                return false;
+            }
             self.remember(issued, true);
             return self.note(
                 format!("EEWを受信 · 発表から120秒以上経過（発表 {stamp} JST）"),
@@ -145,12 +162,34 @@ impl State {
                 true,
             );
         }
+        if let Some(id) = report.eew_event_id.as_deref()
+            && self
+                .seen
+                .iter()
+                .any(|event| event.id == id && event.cancelled)
+            && !report.eew_cancelled
+        {
+            return false;
+        }
+        self.record_event(&mut report, issued);
+        if !newer && report.eew_cancelled && !same_event {
+            return false;
+        }
+        if !newer && late_warning {
+            let active = &mut self.active.as_mut().expect("same active event").bulletin;
+            let changed = active.eew_warning_issued != report.eew_warning_issued
+                || active.warning_areas != report.warning_areas;
+            active.eew_warning_issued = report.eew_warning_issued;
+            active.warning_areas = report.warning_areas;
+            return changed;
+        }
         let remaining = (ACTIVE_FOR - age.max(chrono::TimeDelta::zero()))
             .to_std()
             .unwrap_or(Duration::ZERO);
-        self.last = Some(order);
+        if newer {
+            self.last = Some(order);
+        }
         self.remember(issued, false);
-        self.record_event(&report);
         self.active = Some(ActiveReport {
             bulletin: report,
             expires: now + remaining,
@@ -167,7 +206,7 @@ impl State {
                 self.remember(issued, true);
             }
             self.active = None;
-            if self.waiting.is_none()
+            if self.waiting.is_empty()
                 && self.notice.as_ref().is_none_or(|(_, uncertain)| !uncertain)
             {
                 self.note("最後に受信したEEWは表示時間を過ぎました".into(), false);
@@ -187,27 +226,53 @@ impl State {
         true
     }
 
-    fn record_event(&mut self, report: &Bulletin) {
+    fn record_event(&mut self, report: &mut Bulletin, issued: Stamp) {
         let Some(id) = &report.eew_event_id else {
             return;
         };
-        if let Some(event) = self.seen.iter_mut().find(|event| event.id == *id) {
-            if !report.eew_cancelled && (!event.announced || report.warning && !event.warned) {
-                self.bell = true;
-                event.announced = true;
-                event.warned |= report.warning;
-            }
-        } else {
-            if self.seen.len() >= 256 {
-                self.seen.pop_front();
-            }
-            self.seen.push_back(ReceivedEvent {
-                id: id.clone(),
-                announced: !report.eew_cancelled,
-                warned: report.warning,
+        let index = self
+            .seen
+            .iter()
+            .position(|event| event.id == *id)
+            .unwrap_or_else(|| {
+                if self.seen.len() >= 256 {
+                    self.seen.pop_front();
+                }
+                self.seen.push_back(ReceivedEvent {
+                    id: id.clone(),
+                    announced: false,
+                    cancelled: false,
+                    warning_issued: None,
+                    warning_areas: Vec::new(),
+                });
+                self.seen.len() - 1
             });
-            self.bell |= !report.eew_cancelled;
+        let event = &mut self.seen[index];
+        if report.eew_cancelled {
+            event.cancelled = true;
+            event.warning_issued = None;
+            event.warning_areas.clear();
+        } else {
+            let warned = report.has_eew_warning();
+            let already_warned = event.warning_issued.is_some() || !event.warning_areas.is_empty();
+            self.bell |= !event.announced || warned && !already_warned;
+            event.announced = true;
+            if report.warning {
+                event.warning_issued = Some(
+                    event
+                        .warning_issued
+                        .map_or(issued, |prior| prior.max(issued)),
+                );
+            }
+            // 警報の続報は対象地域を追加する。予報の震度変化では取り消さない。
+            for name in &report.warning_areas {
+                if !event.warning_areas.contains(name) {
+                    event.warning_areas.push(name.clone());
+                }
+            }
         }
+        report.eew_warning_issued = event.warning_issued;
+        report.warning_areas.clone_from(&event.warning_areas);
     }
 }
 
@@ -293,5 +358,56 @@ mod tests {
         assert!(state.receive(update, now));
         assert!(!state.take_bell());
         assert!(state.active().unwrap().eew_cancelled);
+    }
+
+    #[test]
+    fn warning_areas_survive_forecasts_and_follow_the_event_id() {
+        let now = Instant::now();
+        let clock = clock(now);
+        let mut state = State::default();
+        let mut warning = report(clock, 8);
+        warning.warning = true;
+        warning.warning_areas = vec!["熊本県熊本".into()];
+        let mut forecast = report(clock, 5);
+        forecast.eew_final = true;
+        forecast.maximum = Some(crate::data::Level::Known(2));
+        // Both packets may arrive before the server clock is ready.
+        assert!(state.receive(forecast.clone(), now));
+        state.receive(warning, now);
+        assert!(state.sync(clock, now));
+        let active = state.active().unwrap();
+        assert!(active.eew_final && !active.warning && active.has_eew_warning());
+        assert_eq!(active.warning_areas, ["熊本県熊本"]);
+        assert_eq!(active.maximum.as_ref().unwrap().label(), "3");
+        assert_eq!(state.warning_seconds(now), Some(8));
+
+        // A warning from the fallback may arrive out of order and list just the addition.
+        let mut addition = report(clock, 6);
+        addition.provider = crate::data::Provider::P2p;
+        addition.warning = true;
+        addition.warning_areas = vec!["熊本県天草・芦北".into()];
+        assert!(state.receive(addition.clone(), now));
+        assert!(!state.receive(addition, now));
+        let active = state.active().unwrap();
+        assert_eq!(active.warning_areas, ["熊本県熊本", "熊本県天草・芦北"]);
+        assert!(active.eew_final);
+        assert_eq!(active.provider, crate::data::Provider::Wolfx);
+
+        let mut other = report(clock, 4);
+        other.eew_event_id = Some("other".into());
+        assert!(state.receive(other, now));
+        assert!(!state.active().unwrap().has_eew_warning());
+
+        forecast.issued = report(clock, 3).issued;
+        assert!(state.receive(forecast.clone(), now));
+        assert_eq!(state.active().unwrap().warning_areas.len(), 2);
+        let mut cancellation = report(clock, 6);
+        cancellation.eew_serial = None;
+        cancellation.eew_cancelled = true;
+        assert!(state.receive(cancellation, now));
+        assert!(!state.active().unwrap().has_eew_warning());
+        assert!(state.active().unwrap().warning_areas.is_empty());
+        forecast.issued = report(clock, 1).issued;
+        assert!(!state.receive(forecast, now));
     }
 }

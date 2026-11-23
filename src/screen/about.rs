@@ -88,6 +88,21 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize, info: AboutI
     let viewport = capacity - pinned.len();
     let mut content = Vec::new();
 
+    let features = [
+        ("地震", "地震の履歴と、地域別・観測点別の震度を表示します。"),
+        (
+            "EEW",
+            "警報対象と推定震度の地図を切り替えられます。仮定震源には「PLUM法による仮定震源」と表示します。",
+        ),
+        (
+            "津波",
+            "警報・注意報・予報を沿岸線と地域一覧で色分けします。",
+        ),
+    ];
+    content.push(color(&fit("表示できる情報", inner), INK, display.colors));
+    content.extend(about_rows(&features, inner, display.colors));
+    content.push(String::new());
+
     let detected = |available| if available { "対応" } else { "未検出" };
     let image = format!(
         "Sixel {}  Kitty {}",
@@ -120,7 +135,10 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize, info: AboutI
     let credits = [
         ("通常配信", "Wolfx Project"),
         ("予備配信", "P2P地震情報"),
-        ("気象庁", "震度観測点一覧・地震情報／細分区域GIS"),
+        (
+            "気象庁",
+            "震度観測点一覧・地震情報／細分区域GIS・津波予報区",
+        ),
         ("国土交通省", "国土数値情報（湖沼データ）"),
         ("Natural Earth", "1:50m Land · 東アジアの周辺陸地"),
         ("FIGlet Slant", "Glenn Chappell"),

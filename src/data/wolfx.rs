@@ -252,7 +252,7 @@ pub(super) fn read_eew(packet: &Value) -> Result<Option<Bulletin>> {
         .and_then(parse_time)
         .ok_or("AnnouncedTime が不正です")?;
     let cancelled = packet.cancelled == Some(true);
-    let assumed = packet.assumed == Some(true);
+    let assumed = !cancelled && packet.assumed == Some(true);
     let kind = packet.code_type.as_deref().unwrap_or_default();
     let intensity_only = kind.starts_with("最大予測震度のみ");
     let warning = !cancelled && packet.warning == Some(true);
@@ -286,10 +286,8 @@ pub(super) fn read_eew(packet: &Value) -> Result<Option<Bulletin>> {
             if name.is_empty() {
                 continue;
             }
-            if warning
-                && matches!(area.kind.as_deref().unwrap_or_default(), "" | "警報")
-                && warnings_seen.insert(name)
-            {
+            let kind = area.kind.as_deref().unwrap_or_default().trim();
+            if (kind == "警報" || kind.is_empty() && warning) && warnings_seen.insert(name) {
                 warning_areas.push(name.into());
             }
             let maximum = area.shindo1.as_deref().and_then(forecast_level);
@@ -307,6 +305,7 @@ pub(super) fn read_eew(packet: &Value) -> Result<Option<Bulletin>> {
         label,
         name: packet.hypocenter.unwrap_or_default(),
         eew: true,
+        plum_assumed_hypocenter: assumed,
         eew_cancelled: cancelled,
         eew_serial: serial,
         eew_final: final_report,
@@ -318,15 +317,11 @@ pub(super) fn read_eew(packet: &Value) -> Result<Option<Bulletin>> {
             .then(|| packet.origin_time.as_deref().and_then(parse_time))
             .flatten(),
         issued: Some(issued),
-        comment: if assumed && !cancelled {
-            format!("{kind}\n仮定震源要素")
-        } else {
-            kind.into()
-        },
+        comment: kind.into(),
         ..Bulletin::default()
     };
     if !cancelled {
-        bulletin.maximum = packet.max_intensity.as_deref().and_then(Level::parse);
+        bulletin.maximum = packet.max_intensity.as_deref().and_then(forecast_level);
         if !intensity_only {
             bulletin.epicenter = epicenter(&packet.longitude, &packet.latitude);
             if !assumed {
@@ -342,7 +337,7 @@ pub(super) fn read_eew(packet: &Value) -> Result<Option<Bulletin>> {
 }
 
 pub(super) fn read_tsunami(packet: &Value) -> Result<Tsunami> {
-    use super::TsunamiStatus;
+    use super::{TsunamiArea, TsunamiLevel, TsunamiStatus};
 
     let status = match text(&packet["status"]) {
         "active" => TsunamiStatus::Alert,
@@ -363,31 +358,36 @@ pub(super) fn read_tsunami(packet: &Value) -> Result<Tsunami> {
                 return None;
             }
             let level = match text(&area["level"]) {
-                "major_warning" => "大津波警報",
-                "warning" => "津波警報",
-                "advisory" => "津波注意報",
-                "forecast" => "津波予報",
-                "cleared" => "解除",
-                "none" => "津波なし",
-                _ => "区分不明",
+                "major_warning" => TsunamiLevel::MajorWarning,
+                "warning" => TsunamiLevel::Warning,
+                "advisory" => TsunamiLevel::Advisory,
+                "forecast" => TsunamiLevel::Forecast,
+                "cleared" => TsunamiLevel::Cleared,
+                "none" => TsunamiLevel::None,
+                _ => TsunamiLevel::Unknown,
             };
-            let mut area_line = format!("{level}  {name}");
+            let mut details = String::new();
             let wave = &area["maxWave"];
             let height = text(&wave["text"]);
             if !height.is_empty() {
-                area_line.push_str(&format!("  {height}"));
+                details.push_str(&format!("  {height}"));
             } else if let Some(height) = wave["height"].as_f64() {
                 let condition = text(&wave["condition"]);
-                area_line.push_str(&format!("  {height} m {condition}"));
+                details.push_str(&format!("  {height} m {condition}"));
             }
             let first = &area["firstWave"];
             let first_text = text(&first["text"]);
             if !first_text.is_empty() {
-                area_line.push_str(&format!("  第1波 {first_text}"));
+                details.push_str(&format!("  第1波 {first_text}"));
             } else if let Some(arrival) = parse_time(text(&first["time"])) {
-                area_line.push_str(&format!("  第1波 {} JST", arrival.format("%m/%d %H:%M")));
+                details.push_str(&format!("  第1波 {} JST", arrival.format("%m/%d %H:%M")));
             }
-            Some(area_line)
+            Some(TsunamiArea {
+                code: text(&area["code"]).into(),
+                name: name.into(),
+                level,
+                details,
+            })
         })
         .collect();
     let event_notice = match text(&packet["status"]) {

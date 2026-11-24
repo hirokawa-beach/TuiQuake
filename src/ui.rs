@@ -386,6 +386,7 @@ pub struct App {
     selection: [usize; Tab::COUNT],
     scroll: usize,
     reading_start: usize,
+    reading_limit: usize,
     pub view: View,
     eew_layer: EewLayer,
     layer: Layer,
@@ -422,6 +423,7 @@ impl App {
             selection: [0; Tab::COUNT],
             scroll: 0,
             reading_start: 0,
+            reading_limit: 0,
             view: View::new(national),
             eew_layer: EewLayer::default(),
             layer: Layer::default(),
@@ -661,18 +663,15 @@ impl App {
             KeyCode::Left | KeyCode::Right
                 if self.tab == Tab::Quake && self.page == Page::Map && width >= MIN_SPLIT_WIDTH =>
             {
-                let count =
-                    self.reports
-                        .get(self.selection[0])
-                        .map_or(0, |report| match self.layer {
-                            Layer::Regions => report.bulletin.regions.len(),
-                            Layer::Stations => report.bulletin.stations.len(),
-                        });
                 let direction = if key == KeyCode::Left { -1 } else { 1 };
-                self.reading_start = self
+                let next = self
                     .reading_start
                     .saturating_add_signed(direction)
-                    .min(count.saturating_sub(1));
+                    .min(self.reading_limit);
+                if next == self.reading_start {
+                    return false;
+                }
+                self.reading_start = next;
             }
             KeyCode::Up | KeyCode::Down => {
                 let direction = if key == KeyCode::Up { -1 } else { 1 };
@@ -1300,6 +1299,10 @@ impl App {
             },
         };
         let frame = renderer.render(scene, display);
+        if self.tab == Tab::Quake {
+            self.reading_limit = frame.reading_limit;
+            self.reading_start = self.reading_start.min(self.reading_limit);
+        }
         if overlay.is_none()
             && let Some(view) = frame.map_view
         {

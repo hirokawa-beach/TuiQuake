@@ -66,6 +66,7 @@ pub struct Frame {
     pub map_row: usize,
     pub map_col: usize,
     pub map_view: Option<View>,
+    pub reading_limit: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -469,15 +470,15 @@ fn station_readings_window(
     start: usize,
     slots: usize,
     width: usize,
-) -> (String, Vec<ReadingLine>) {
-    let (title, start, shown, rows) = match grouping {
+) -> (String, Vec<ReadingLine>, usize) {
+    let (title, start, shown, rows, limit) = match grouping {
         StationGrouping::Intensity => {
-            let (start, shown, rows) = intensity_readings(b, width, start, slots);
-            ("観測点 · 震度別", start, shown, rows)
+            let (start, shown, rows, limit) = intensity_readings(b, width, start, slots);
+            ("観測点 · 震度別", start, shown, rows, limit)
         }
         StationGrouping::Prefecture => {
-            let (start, shown, rows) = prefecture_window(b, start, slots);
-            ("各地の震度 · 観測点", start, shown, rows)
+            let (start, shown, rows, limit) = prefecture_window(b, start, slots);
+            ("各地の震度 · 観測点", start, shown, rows, limit)
         }
     };
     let mut title = title.to_owned();
@@ -485,10 +486,14 @@ fn station_readings_window(
     if shown != 0 && shown < count {
         write!(title, "  {}–{}/{count}", start + 1, start + shown).unwrap();
     }
-    (title, rows)
+    (title, rows, limit)
 }
 
-fn prefecture_window(b: &Bulletin, start: usize, slots: usize) -> (usize, usize, Vec<ReadingLine>) {
+fn prefecture_window(
+    b: &Bulletin,
+    start: usize,
+    slots: usize,
+) -> (usize, usize, Vec<ReadingLine>, usize) {
     grouped_window(
         &b.stations,
         StationGrouping::Prefecture,
@@ -499,7 +504,11 @@ fn prefecture_window(b: &Bulletin, start: usize, slots: usize) -> (usize, usize,
     )
 }
 
-fn regional_window(b: &Bulletin, start: usize, slots: usize) -> (usize, usize, Vec<ReadingLine>) {
+fn regional_window(
+    b: &Bulletin,
+    start: usize,
+    slots: usize,
+) -> (usize, usize, Vec<ReadingLine>, usize) {
     grouped_window(
         &b.regions,
         StationGrouping::Intensity,
@@ -517,14 +526,14 @@ fn grouped_window(
     slots: usize,
     heading: impl Fn(&str, &[&Observation]) -> ReadingLine,
     row: impl Fn(&Observation) -> ReadingLine,
-) -> (usize, usize, Vec<ReadingLine>) {
-    let count = observations.len();
+) -> (usize, usize, Vec<ReadingLine>, usize) {
     let groups = observation_groups(observations, grouping);
-    let start = if count + groups.len() <= slots {
-        0
-    } else {
-        start.min(count.saturating_sub(1))
-    };
+    let limit = reading_limit(
+        groups.iter().rev().map(|(_, entries)| entries.len()),
+        slots,
+        observations.len(),
+    );
+    let start = start.min(limit);
     let mut skip = start;
     let mut rows = Vec::new();
     let mut shown = 0;
@@ -542,7 +551,28 @@ fn grouped_window(
         rows.extend(visible.map(&row));
         skip = 0;
     }
-    (start, shown, rows)
+    (start, shown, rows, limit)
+}
+
+// Each visible group needs a heading and at least one data row.
+fn reading_limit(
+    groups_from_end: impl Iterator<Item = usize>,
+    mut slots: usize,
+    total: usize,
+) -> usize {
+    if slots < 2 {
+        return 0;
+    }
+    let mut visible = 0;
+    for count in groups_from_end {
+        if slots < 2 {
+            break;
+        }
+        let take = count.min(slots - 1);
+        visible += take;
+        slots -= take + 1;
+    }
+    total.saturating_sub(visible)
 }
 
 fn section_heading(title: &str, width: usize, ansi: bool) -> String {

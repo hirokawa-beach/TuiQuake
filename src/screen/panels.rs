@@ -97,7 +97,7 @@ pub(super) fn earthquake_sidebar(
     width: usize,
     rows: usize,
     ansi: bool,
-) -> Vec<String> {
+) -> (Vec<String>, usize) {
     let Scene {
         bulletin: b,
         quake_notices: notices,
@@ -110,7 +110,7 @@ pub(super) fn earthquake_sidebar(
     let min_readings =
         3 + usize::from(layer == Layer::Stations && grouping == StationGrouping::Intensity);
     if rows < MIN_HISTORY + min_readings + 2 {
-        return history.bottom_section(width, rows, ansi);
+        return (history.bottom_section(width, rows, ansi), 0);
     }
 
     let summary_rows = (rows - MIN_HISTORY - min_readings - 1).min(8);
@@ -127,16 +127,16 @@ pub(super) fn earthquake_sidebar(
     };
     let history_height = history.target_height(available);
     let slots = remaining - history_height - 1;
-    let (title, entries) = match layer {
+    let (title, entries, limit) = match layer {
         Layer::Stations => station_readings_window(b, grouping, start, slots, width),
         Layer::Regions => {
             let count = b.regions.len();
-            let (start, shown, entries) = regional_window(b, start, slots);
+            let (start, shown, entries, limit) = regional_window(b, start, slots);
             let mut title = format!("各地の震度 · {}", layer.label());
             if shown > 0 && shown < count {
                 write!(title, "  {}–{}/{count}", start + 1, start + shown).unwrap();
             }
-            (title, entries)
+            (title, entries, limit)
         }
     };
     lines.push(section_heading(&title, width, ansi));
@@ -147,7 +147,7 @@ pub(super) fn earthquake_sidebar(
     }
     lines.resize_with(rows - history_height, String::new);
     lines.extend(history.section(width, history_height, ansi));
-    lines
+    (lines, limit)
 }
 
 pub(super) fn eew_badge(value: &str, background: Option<Rgb>, ansi: bool) -> String {

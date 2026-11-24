@@ -67,6 +67,7 @@ impl Renderer {
     }
 
     pub fn render(&mut self, scene: Scene<'_>, display: Display) -> &Frame {
+        self.frame.reading_limit = 0;
         let width = display.width();
         let Scene {
             bulletin: b,
@@ -400,13 +401,15 @@ impl Renderer {
             }
             panels
         } else if let Some(history) = history {
-            earthquake_sidebar(
+            let (lines, limit) = earthquake_sidebar(
                 &scene,
                 history,
                 sidebar_width,
                 rows + map_edges,
                 display.colors,
-            )
+            );
+            self.frame.reading_limit = limit;
+            lines
         } else {
             let title = aside
                 .first()

@@ -150,11 +150,13 @@ fn station_lists_group_by_prefecture_and_keep_the_heading_when_scrolling() {
             "── 秋田県"
         ]
     );
-    let (title, rows) = station_readings_window(&bulletin, StationGrouping::Prefecture, 4, 2, 70);
+    let (title, rows, _) =
+        station_readings_window(&bulletin, StationGrouping::Prefecture, 4, 2, 70);
     assert_eq!(title, "各地の震度 · 観測点  5–5/14");
     assert_eq!(rows[0].render(70, false), "── 岩手県");
     assert!(rows[1].render(70, false).contains("大船渡"));
-    let (title, rows) = station_readings_window(&bulletin, StationGrouping::Prefecture, 3, 4, 70);
+    let (title, rows, _) =
+        station_readings_window(&bulletin, StationGrouping::Prefecture, 3, 4, 70);
     assert_eq!(title, "各地の震度 · 観測点  4–5/14");
     assert_eq!(rows[0].render(70, false), "── 宮城県");
     assert!(rows[1].render(70, false).contains("仙台"));
@@ -209,8 +211,25 @@ fn station_lists_pack_municipalities_by_intensity_and_color_only_the_badge() {
     assert!(marked.contains("牧ノ内\x1b[0m") && marked.contains("陣内\x1b[0m"));
     assert_eq!(styled_width(&marked), text[6].width());
 
-    let (title, narrow) = station_readings_window(&bulletin, StationGrouping::Intensity, 5, 4, 29);
-    assert!(title.contains("6–") && title.ends_with("/9"));
+    let (title, narrow, _) =
+        station_readings_window(&bulletin, StationGrouping::Intensity, 5, 4, 29);
+    assert!(title.contains("7–") && title.ends_with("/9"), "{title}");
+
+    let window = |start| {
+        let (_, rows, limit) =
+            station_readings_window(&bulletin, StationGrouping::Intensity, start, 4, width);
+        let rows: Vec<_> = rows.iter().map(|line| line.render(width, false)).collect();
+        (rows, limit)
+    };
+    let (before, _) = window(2);
+    let (last, limit) = window(3);
+    assert_eq!(limit, 3);
+    assert!(before[1].contains("田浦町"));
+    assert_eq!(last[1], before[2]);
+    assert!(last[1].contains("牧ノ内＊  陣内＊"));
+    assert!(last[2].contains("姫戸町＊"));
+    assert_eq!(window(usize::MAX), (last, limit));
+    assert_eq!(intensity_readings(&bulletin, width, usize::MAX, 24).3, 0);
     let narrow: Vec<_> = narrow.iter().map(|line| line.render(29, false)).collect();
     assert!(narrow[0].contains("震度 2"));
     assert!(narrow[1].contains("上天草市"));
@@ -1086,6 +1105,7 @@ fn readings_fill_the_space_above_bottom_aligned_history() {
             38,
             false,
         )
+        .0
     };
     let normal = render(10, "");
     let short = render(4, "");

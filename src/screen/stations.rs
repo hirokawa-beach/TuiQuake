@@ -180,7 +180,7 @@ pub(super) fn intensity_readings(
     width: usize,
     start: usize,
     slots: usize,
-) -> (usize, usize, Vec<ReadingLine>) {
+) -> (usize, usize, Vec<ReadingLine>, usize) {
     let groups = observation_groups(&bulletin.stations, StationGrouping::Intensity);
     let city_width = bulletin
         .stations
@@ -204,23 +204,20 @@ pub(super) fn intensity_readings(
             (heading, count, rows)
         })
         .collect();
-    let total = bulletin.stations.len();
-    let start = if groups
-        .iter()
-        .map(|(_, _, rows)| rows.len() + 1)
-        .sum::<usize>()
-        <= available
-    {
-        0
-    } else {
-        start.min(total.saturating_sub(1))
-    };
-    let mut skip = start;
+    let total = groups.iter().map(|(_, _, rows)| rows.len()).sum();
+    let limit = reading_limit(
+        groups.iter().rev().map(|(_, _, rows)| rows.len()),
+        available,
+        total,
+    );
+    let mut skip = start.min(limit);
+    let mut first_station = 0;
     let mut shown = 0;
     let mut lines = Vec::new();
     for (heading, count, rows) in groups {
-        if skip >= count {
-            skip -= count;
+        if skip >= rows.len() {
+            skip -= rows.len();
+            first_station += count;
             continue;
         }
         if available - lines.len() < 2 {
@@ -229,8 +226,9 @@ pub(super) fn intensity_readings(
         lines.push(heading);
         let mut previous_city = None;
         for row in rows {
-            if skip >= row.names.len() {
-                skip -= row.names.len();
+            if skip > 0 {
+                skip -= 1;
+                first_station += row.names.len();
                 continue;
             }
             if lines.len() == available {
@@ -241,7 +239,7 @@ pub(super) fn intensity_readings(
             } else {
                 row.city
             };
-            let names = &row.names[skip..];
+            let names = &row.names;
             let prefix = pad(city, city_width);
             lines.push(ReadingLine::StationNames(
                 format!("  {prefix}{gap}{}", names.join("  ")),
@@ -255,5 +253,5 @@ pub(super) fn intensity_readings(
     if marked && shown != 0 {
         lines.push(ReadingLine::StationNames(MARK_NOTE.into(), MUTED));
     }
-    (start, shown, lines)
+    (first_station, shown, lines, limit)
 }

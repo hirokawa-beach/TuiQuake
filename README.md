@@ -88,6 +88,8 @@ macOS でも、自分の機種用のファイル名で同じ手順を実行で�
 | [kitty](https://sw.kovidgoyal.net/kitty/) | Linux・macOS | Kitty |
 | [WezTerm](https://wezterm.org/features.html) | Windows・Linux・macOS | Kitty、Sixel（試験的） |
 
+ほかのターミナルは、比較表の `Sixel` と `Kitty Graphics` で探せます。 [Terminal Troveの比較表](https://terminaltrove.com/compare/terminals/)
+
 起動時の選択画面に表示された描画方式を選んでください。画像描画方式が検出されない場合は、Unicode Braille（表示調整中）で起動できます。
 
 日本語を表示できる等幅フォントを使ってください。Windows Terminalでは Cascadia Mono を使えます。ライブ配信の受信にはインターネット接続が必要です。 [Windows Terminal の外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)

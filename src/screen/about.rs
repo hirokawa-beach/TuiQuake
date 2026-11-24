@@ -112,8 +112,18 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize, info: AboutI
     let os = format!("{} / {}", env::consts::OS, env::consts::ARCH);
     let repository = env!("CARGO_PKG_REPOSITORY");
     let issues = concat!(env!("CARGO_PKG_REPOSITORY"), "/issues");
+    let built_at = env!("TUIQUAKE_BUILD_EPOCH")
+        .parse()
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map_or_else(
+            || "不明".into(),
+            |time| time.format("%Y-%m-%d %H:%M UTC").to_string(),
+        );
     let diagnostics = [
         ("バージョン", env!("CARGO_PKG_VERSION")),
+        ("コミット", env!("TUIQUAKE_BUILD_COMMIT")),
+        ("ビルド日時", &built_at),
         ("制作者", env!("CARGO_PKG_AUTHORS")),
         ("リポジトリ", repository),
         ("ライセンス", env!("CARGO_PKG_LICENSE")),

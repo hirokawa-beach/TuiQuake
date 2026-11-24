@@ -261,7 +261,7 @@ impl Shape {
                     .map(|edge| edge.x + (y - edge.low) * edge.slope),
             );
             cuts.sort_unstable_by(f64::total_cmp);
-            for span in cuts.chunks_exact(2) {
+            for span in cuts.as_chunks::<2>().0 {
                 let score = (span[1] - span[0]) / (1.0 + f64::from((row - 5i32).abs()) / 10.0);
                 if score > best {
                     best = score;
@@ -574,14 +574,13 @@ impl Atlas {
                 }
             }
         }
-        if let Some(where_) = bulletin.epicenter {
-            raster.mark(where_, EPICENTER, extent, image);
-        }
-
         if !labels.is_empty() {
             let cell = image_cell.unwrap_or((TEXT_CELL_WIDTH, TEXT_CELL_HEIGHT));
             labels.sort_by_key(|&(_, level)| std::cmp::Reverse(level));
             raster.place_labels(&labels, bulletin.epicenter, extent, cell, image);
+        }
+        if let Some(where_) = bulletin.epicenter {
+            raster.mark(where_, EPICENTER, extent, image);
         }
         view
     }
@@ -686,11 +685,20 @@ impl Raster {
             let end = start + label.len();
             let nearby = start.saturating_sub(1)..(end + 1).min(columns);
             let offset = row * columns;
-            if epicenter.is_some_and(|(x, y)| row == y && (start..end).contains(&x))
-                || self.labels[offset + nearby.start..offset + nearby.end]
+            let covers_epicenter = epicenter.is_some_and(|(x, y)| {
+                if image {
+                    row.abs_diff(y) <= 1 && nearby.contains(&x)
+                } else {
+                    row == y && (start..end).contains(&x)
+                }
+            });
+            let crowds_label = (row.saturating_sub(1)..=(row + 1).min(rows - 1)).any(|other| {
+                let offset = other * columns;
+                self.labels[offset + nearby.start..offset + nearby.end]
                     .iter()
                     .any(Option::is_some)
-            {
+            });
+            if covers_epicenter || crowds_label {
                 continue;
             }
             let color = STATION + level;
@@ -779,7 +787,7 @@ impl Raster {
             cuts.sort_unstable_by(f64::total_cmp);
             let offset = (start + i) * self.width;
             let col = |x: f64| ((x - 0.5).ceil() as usize).min(self.width);
-            for pair in cuts.chunks_exact(2) {
+            for pair in cuts.as_chunks::<2>().0 {
                 let first = col(pair[0]);
                 let last = col(pair[1]);
                 if first < last {
@@ -921,6 +929,68 @@ pub fn plain(color: Color) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn epicenter_keeps_clear_of_labels_on_adjacent_rows() {
+        let mut raster = Raster::default();
+        raster.resize(80, 50);
+        let extent = Extent {
+            west: -25.0,
+            north: 25.0,
+            step: 1.0,
+        };
+        let epicenter = Location { lon: 0.0, lat: 0.0 };
+        let labels = [((0.0, 10.0), 8), ((30.0, 10.0), 4)];
+        raster.place_labels(&labels, Some(epicenter), extent, (10, 10), true);
+        assert!(
+            !raster
+                .labels
+                .iter()
+                .flatten()
+                .any(|cell| cell.color == STATION + 8)
+        );
+        assert!(
+            raster
+                .labels
+                .iter()
+                .flatten()
+                .any(|cell| cell.color == STATION + 4)
+        );
+    }
+
+    #[test]
+    fn crowded_labels_keep_the_strongest_intensity() {
+        let mut raster = Raster::default();
+        raster.resize(80, 50);
+        let extent = Extent {
+            west: 0.0,
+            north: 50.0,
+            step: 1.0,
+        };
+        let labels = [((25.0, 35.0), 8), ((25.0, 25.0), 7), ((65.0, 25.0), 4)];
+        raster.place_labels(&labels, None, extent, (10, 10), true);
+        assert!(
+            raster
+                .labels
+                .iter()
+                .flatten()
+                .any(|cell| cell.color == STATION + 8)
+        );
+        assert!(
+            !raster
+                .labels
+                .iter()
+                .flatten()
+                .any(|cell| cell.color == STATION + 7)
+        );
+        assert!(
+            raster
+                .labels
+                .iter()
+                .flatten()
+                .any(|cell| cell.color == STATION + 4)
+        );
+    }
 
     #[test]
     fn shared_region_boundaries_do_not_leave_water_pixels_inland() {

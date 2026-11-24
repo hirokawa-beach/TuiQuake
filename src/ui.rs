@@ -24,37 +24,46 @@ use crate::{
     graphics::{self, Capabilities, Image, KITTY_COMMAND, Map, MapMode},
     map::{self, EewLayer, Layer, View},
     screen::{
-        self, APP_NAME, AboutInfo, Display, FeedStatus, Frame, HelpOverlay, HelpTopic, History,
+        self, AboutInfo, Display, FeedStatus, Frame, HelpOverlay, HelpTopic, History,
         MIN_SPLIT_WIDTH, MenuNotice, QuakeNotices, Renderer, Scene,
     },
     settings::{DEFAULT_HISTORY_ROWS, Settings, StationGrouping},
-    tsunami::{self, Validity},
 };
 
+mod demo;
 mod settings_menu;
+mod tsunami_tab;
 
+use demo::DemoState;
 use settings_menu::SettingsMenu;
+use tsunami_tab::TsunamiTab;
 
 pub fn tty() -> bool {
     io::stdout().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb")
 }
 
 pub fn ansi() -> bool {
-    if !tty() {
-        return false;
-    }
     #[cfg(windows)]
     {
-        crossterm::ansi_support::supports_ansi()
+        tty() && crossterm::ansi_support::supports_ansi()
     }
     #[cfg(not(windows))]
     {
-        true
+        tty()
     }
 }
 
 pub fn display(colors: bool, map: Map) -> Display {
     let (columns, rows) = terminal::size().unwrap_or((88, 29));
+    // Windows Terminal uses virtual Sixel pixels. Other terminals can change
+    // their pixel size per cell when the font size changes.
+    #[cfg(unix)]
+    let map = match map {
+        Map::Image(Image::Sixel(cell)) => {
+            Map::Image(Image::Sixel(graphics::terminal_cell().unwrap_or(cell)))
+        }
+        _ => map,
+    };
     Display {
         columns: usize::from(columns),
         rows: usize::from(rows),
@@ -221,190 +230,7 @@ pub fn write_inline(out: &mut impl Write, frame: &Frame) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn demo_can_change_intensity_and_toggle_forecast_without_losing_warning_areas() {
-        let now = Instant::now();
-        let mut app = App::new(Client::new(), Duration::from_secs(2), false);
-        app.change_tab(Tab::Demo);
-        let original = app.current().unwrap().0.into_owned();
-        assert!(app.demo.next.is_none());
-
-        assert!(app.select(KeyCode::Char(' '), 80, now));
-        assert!(app.demo.next.is_some());
-        assert!(app.select(KeyCode::Right, 80, now));
-        assert!(app.demo.next.is_none());
-        assert_eq!(
-            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
-            "5強"
-        );
-        for _ in 0..4 {
-            assert!(app.select(KeyCode::Right, 80, now));
-        }
-        assert_eq!(
-            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
-            "1"
-        );
-
-        assert!(app.select(KeyCode::Char('f'), 80, now));
-        assert!(!app.current().unwrap().0.warning);
-        assert!(app.current().unwrap().0.label.contains("予報"));
-        assert!(app.current().unwrap().0.warning_areas.is_empty());
-        assert!(app.select(KeyCode::Char('f'), 80, now));
-        assert_eq!(
-            app.current().unwrap().0.warning_areas,
-            original.warning_areas
-        );
-        assert_eq!(app.current().unwrap().0.label, original.label);
-
-        assert!(app.select(KeyCode::Char('r'), 80, now));
-        assert_eq!(
-            app.current().unwrap().0.maximum.as_ref().unwrap().label(),
-            "5弱"
-        );
-        assert!(app.demo.next.is_none());
-    }
-
-    #[test]
-    fn demo_bell_plays_at_start_and_warning_escalation() {
-        let now = Instant::now();
-        let delay = Duration::from_secs(2);
-        let mut app = App::new(Client::new(), delay, false);
-        app.details.next = now + Duration::from_secs(60);
-        app.change_tab(Tab::Demo);
-        assert!(!app.take_eew_bell());
-        assert!(app.select(KeyCode::Char(' '), 80, now));
-        assert!(app.take_eew_bell());
-        assert!(app.update(now + delay));
-        assert!(!app.take_eew_bell());
-        assert!(app.update(now + delay * 2));
-        assert!(!app.take_eew_bell());
-
-        app.select(KeyCode::Char('r'), 80, now);
-        app.select(KeyCode::Char('f'), 80, now);
-        assert!(!app.take_eew_bell());
-        app.select(KeyCode::Char(' '), 80, now);
-        assert!(app.take_eew_bell());
-        assert!(app.update(now + delay));
-        assert!(app.take_eew_bell());
-        app.select(KeyCode::Char('f'), 80, now);
-        assert!(!app.take_eew_bell());
-        app.select(KeyCode::Char('f'), 80, now);
-        assert!(app.take_eew_bell());
-    }
-
-    #[test]
-    fn help_scroll_and_close_preserve_the_underlying_view() {
-        let now = Instant::now();
-        let mut app = App::new(Client::new(), Duration::from_secs(2), false);
-        app.page = Page::Text;
-        app.scroll = 4;
-        app.selection[0] = 2;
-        app.view.zoom_by(2);
-        let zoom = app.view.zoom_factor();
-
-        assert!(app.select(KeyCode::Char('h'), 80, now));
-        assert!(app.select(KeyCode::Down, 80, now));
-        assert_eq!(app.help_scroll, Some(1));
-        assert!(!app.select(KeyCode::Char('2'), 80, now));
-        assert!(app.select(KeyCode::Esc, 80, now));
-        assert!(app.help_scroll.is_none());
-        assert!(app.tab == Tab::Quake && app.page == Page::Text);
-        assert_eq!(app.scroll, 4);
-        assert_eq!(app.selection[0], 2);
-        assert_eq!(app.view.zoom_factor(), zoom);
-
-        app.change_tab(Tab::Settings);
-        assert!(app.select(KeyCode::Char('h'), 80, now));
-        assert!(app.select(KeyCode::Char('H'), 80, now));
-        assert!(app.help_scroll.is_none() && app.tab == Tab::Settings);
-    }
-
-    #[test]
-    fn live_eew_alert_changes_refresh_the_quake_menu_and_match_by_id() {
-        let now = Instant::now();
-        let mut app = App::new(Client::new(), Duration::from_secs(2), false);
-        app.details.next = now + Duration::from_secs(60);
-        app.reports = vec![Report {
-            id: "demo-event".into(),
-            bulletin: Bulletin::default(),
-        }]
-        .into();
-        let mut eew = Bulletin {
-            eew: true,
-            eew_event_id: Some("demo-event".into()),
-            issued: Some(chrono::Utc::now().fixed_offset()),
-            ..Bulletin::default()
-        };
-        app.send
-            .send(Reply::Live(LiveUpdate::Clock(
-                Provider::Wolfx,
-                data::ServerClock {
-                    utc: eew.issued.unwrap().to_utc(),
-                    received: now,
-                },
-            )))
-            .unwrap();
-        app.send
-            .send(Reply::Live(LiveUpdate::Eew(Box::new(eew.clone()))))
-            .unwrap();
-        assert!(app.update(now));
-        assert_eq!(app.quake_notices().eew, Some(true));
-
-        eew.warning = true;
-        app.send
-            .send(Reply::Live(LiveUpdate::Eew(Box::new(eew))))
-            .unwrap();
-        assert!(app.update(now));
-        assert!(app.eew.active().unwrap().warning);
-        assert!(app.select(KeyCode::Char('2'), 100, now));
-        assert_eq!(app.eew_layer, EewLayer::Warning);
-        assert!(app.select(KeyCode::Char('v'), 100, now));
-        assert_eq!(app.eew_layer, EewLayer::Forecast);
-        assert!(app.select(KeyCode::Char('v'), 100, now));
-        assert_eq!(app.eew_layer, EewLayer::Warning);
-    }
-
-    #[test]
-    fn sixel_waits_for_the_end_of_a_resize_burst() {
-        let mut resize = ResizeRedraw::default();
-        let sixel = Map::Image(Image::Sixel((10, 20)));
-        let now = Instant::now();
-        let mut draw = |columns, millis| {
-            let mut view = Display {
-                columns,
-                rows: 30,
-                colors: true,
-                map: sixel,
-            };
-            let redraw = resize.update(&mut view, now + Duration::from_millis(millis));
-            (redraw, view.map)
-        };
-        assert_eq!(draw(80, 0), (true, sixel));
-        assert_eq!(draw(120, 10), (true, Map::Braille));
-        assert_eq!(draw(80, 260), (true, Map::Braille));
-        assert_eq!(draw(80, 1259), (false, Map::Braille));
-        assert_eq!(draw(80, 1260), (true, sixel));
-        assert_eq!(draw(80, 1290), (false, sixel));
-    }
-
-    #[test]
-    fn inline_graphic_uses_relative_position_and_leaves_the_cursor_after_the_frame() {
-        let frame = Frame {
-            text: "title\nevent\ntime\n\n  list\n\nlegend".into(),
-            graphic: "\x1bP7;1q~\x1b\\".into(),
-            map_row: 5,
-            map_col: 1,
-            ..Frame::default()
-        };
-        let mut bytes = Vec::new();
-        write_inline(&mut bytes, &frame).unwrap();
-        let output = std::str::from_utf8(&bytes).unwrap();
-        assert!(output.contains("legend\r\n\x1b7\x1b[3A\r\x1b[?80l\x1bP7;1q~\x1b\\\x1b8"));
-    }
-}
+mod tests;
 
 #[cfg(windows)]
 fn set_console_title() -> Option<Vec<u16>> {
@@ -414,7 +240,7 @@ fn set_console_title() -> Option<Vec<u16>> {
     };
 
     let mut previous = vec![0; 32768];
-    let title: Vec<_> = APP_NAME.encode_utf16().chain([0]).collect();
+    let title: Vec<_> = screen::APP_NAME.encode_utf16().chain([0]).collect();
     // Both buffers are writable or null-terminated as required by the console APIs.
     unsafe {
         SetLastError(0);
@@ -527,32 +353,6 @@ enum Reply {
     Live(LiveUpdate),
 }
 
-struct DemoState {
-    frames: Vec<Bulletin>,
-    hidden_areas: Vec<Vec<String>>,
-    delay: Duration,
-    next: Option<Instant>,
-    bell: bool,
-}
-
-impl DemoState {
-    fn new(delay: Duration) -> Self {
-        let frames = data::demo();
-        Self {
-            hidden_areas: vec![Vec::new(); frames.len()],
-            frames,
-            delay: delay.max(Duration::from_millis(150)),
-            next: None,
-            bell: false,
-        }
-    }
-
-    fn announce(&mut self, previous: Option<usize>, index: usize) {
-        let previous = previous.map(|previous| &self.frames[previous]);
-        self.bell |= data::demo_bell(previous, &self.frames[index]);
-    }
-}
-
 struct DetailsState {
     reports: Arc<[Report]>,
     next: Instant,
@@ -584,7 +384,6 @@ pub struct App {
     scroll: usize,
     reading_start: usize,
     pub view: View,
-    tsunami_view: View,
     eew_layer: EewLayer,
     layer: Layer,
     station_grouping: StationGrouping,
@@ -600,9 +399,7 @@ pub struct App {
     connection_error: Option<String>,
     history_error: Option<String>,
     eew: eew::State,
-    tsunami: tsunami::State,
-    tsunami_error: Option<String>,
-    tsunami_received: bool,
+    tsunami: TsunamiTab,
     demo: DemoState,
 }
 
@@ -621,7 +418,6 @@ impl App {
             scroll: 0,
             reading_start: 0,
             view: View::new(national),
-            tsunami_view: View::new(true),
             eew_layer: EewLayer::default(),
             layer: Layer::default(),
             station_grouping: StationGrouping::default(),
@@ -637,9 +433,7 @@ impl App {
             connection_error: None,
             history_error: None,
             eew: eew::State::default(),
-            tsunami: tsunami::State::default(),
-            tsunami_error: None,
-            tsunami_received: false,
+            tsunami: TsunamiTab::default(),
             demo: DemoState::new(delay),
         }
     }
@@ -711,7 +505,7 @@ impl App {
 
     fn map_view_mut(&mut self) -> &mut View {
         if self.tab == Tab::Tsunami {
-            &mut self.tsunami_view
+            &mut self.tsunami.view
         } else {
             &mut self.view
         }
@@ -953,7 +747,7 @@ impl App {
                 Reply::Live(LiveUpdate::Connection(provider, error)) => {
                     let connected = error.is_none();
                     if self.provider != provider || self.connected != Some(connected) {
-                        self.tsunami_received = false;
+                        self.tsunami.received = false;
                     }
                     if self.provider != provider {
                         self.provider = provider;
@@ -961,11 +755,11 @@ impl App {
                         self.list = Arc::default();
                         self.eew.switch_source();
                         self.history_error = None;
-                        self.tsunami_error = None;
+                        self.tsunami.error = None;
                         self.details.requested = provider == Provider::Wolfx;
                         self.details.next = now;
                         if provider == Provider::P2p {
-                            self.tsunami.reference = None;
+                            self.tsunami.state.reference = None;
                         }
                         changed = true;
                     } else if !connected {
@@ -983,7 +777,7 @@ impl App {
                     }
                     eew_changed |= self.eew.sync(clock, now);
                     if provider == Provider::Wolfx {
-                        self.tsunami.sync_wolfx(clock, now);
+                        self.tsunami.state.sync_wolfx(clock, now);
                     }
                 }
                 Reply::Live(LiveUpdate::Eew(report)) => {
@@ -1004,16 +798,16 @@ impl App {
                     changed |= self.tab == Tab::Quake;
                 }
                 Reply::Live(LiveUpdate::Tsunami(report)) => {
-                    self.tsunami_received |= report.provider == self.provider;
-                    self.tsunami.receive(report, now);
-                    self.tsunami_error = None;
+                    self.tsunami.received |= report.provider == self.provider;
+                    self.tsunami.state.receive(report, now);
+                    self.tsunami.error = None;
                     if self.tab == Tab::Tsunami {
                         self.scroll = 0;
                     }
                     changed = true;
                 }
                 Reply::Live(LiveUpdate::TsunamiInvalid(error)) => {
-                    self.tsunami_error = Some(error);
+                    self.tsunami.error = Some(error);
                     changed = true;
                 }
             }
@@ -1037,7 +831,7 @@ impl App {
             }
         }
         changed |= eew_changed || expired;
-        changed |= self.tsunami.update(now);
+        changed |= self.tsunami.state.update(now);
         let warning_seconds = self.eew.warning_seconds(now);
         changed |= self.tab == Tab::Eew && self.warning_seconds != warning_seconds;
         self.warning_seconds = warning_seconds;
@@ -1234,14 +1028,14 @@ impl App {
                 },
                 self.tsunami_map_areas(),
                 display,
-                self.tsunami_view,
+                self.tsunami.view,
                 &mut scroll,
             );
             self.scroll = scroll;
             if overlay.is_none()
                 && let Some(view) = frame.map_view
             {
-                self.tsunami_view = view;
+                self.tsunami.view = view;
             }
             return Ok(draw(frame)?);
         }
@@ -1388,31 +1182,11 @@ impl App {
         let eew = received.then_some(true).or(report.bulletin.eew_notice);
         let tsunami = self
             .tsunami
+            .state
             .verified(self.provider)
             .and_then(|tsunami| tsunami.notice_for(&report.id))
             .or(report.bulletin.tsunami_notice);
         QuakeNotices { eew, tsunami }
-    }
-
-    fn confirmed_tsunami(&self) -> Option<&data::Tsunami> {
-        self.tsunami.verified(self.provider).filter(|report| {
-            report.status != TsunamiStatus::Clear
-                || (self.connected == Some(true)
-                    && self.provider == Provider::Wolfx
-                    && self.tsunami_received
-                    && self.tsunami_error.is_none())
-        })
-    }
-
-    fn tsunami_map_areas(&self) -> &[data::TsunamiArea] {
-        self.confirmed_tsunami()
-            .filter(|report| {
-                matches!(
-                    report.status,
-                    TsunamiStatus::Alert | TsunamiStatus::Forecast
-                )
-            })
-            .map_or(&[], |report| report.areas.as_slice())
     }
 
     fn feed_status(&self) -> FeedStatus {
@@ -1480,59 +1254,6 @@ impl App {
         }
         (status, notes)
     }
-
-    fn tsunami_display(&self) -> (&'static str, bool, Vec<String>, Vec<String>) {
-        let mut notes = Vec::new();
-        let mut areas = Vec::new();
-        if let Some(last) = self.tsunami.last_issued {
-            notes.push(format!("最後の発表 {} JST", last.format("%m/%d %H:%M")));
-        }
-        let confirmed = self.confirmed_tsunami();
-        let status = match confirmed {
-            Some(report) if report.status == TsunamiStatus::Alert => {
-                areas.extend(report.areas.iter().map(data::TsunamiArea::line));
-                "津波警報・注意報 発表中"
-            }
-            Some(report) if report.status == TsunamiStatus::Forecast => {
-                areas.extend(report.areas.iter().map(data::TsunamiArea::line));
-                "津波予報 発表中"
-            }
-            Some(_) => "現在、津波の発表はありません",
-            None if self.tsunami.wolfx.is_none() && self.connected.is_none() => "津波情報を取得中…",
-            None => "現在の津波の発表状況は未確認",
-        };
-        if self.provider == Provider::P2p
-            && let Some(report) = &self.tsunami.reference
-            && confirmed.is_none()
-        {
-            let label = if report.status == (TsunamiStatus::Reference { cancelled: true }) {
-                "参考 · P2Pの解除報"
-            } else {
-                "参考 · P2Pが受信した発表内容"
-            };
-            areas.push(label.into());
-            areas.extend(report.areas.iter().map(data::TsunamiArea::line));
-        }
-        if let Some(report) = &self.tsunami.wolfx {
-            if report.status == TsunamiStatus::Expired {
-                notes.push("最後の発表の有効期限切れ".into());
-            }
-            if self.tsunami.validity == Validity::Expired {
-                notes.push("配信確認期限を過ぎています".into());
-            }
-            if let Some(until) = report.valid_until {
-                notes.push(format!(
-                    "配信確認期限 {} JST · Wolfx",
-                    until.format("%m/%d %H:%M:%S")
-                ));
-            }
-        }
-        if let Some(error) = &self.tsunami_error {
-            notes.push(format!("津波情報の取得・読み取りに失敗 · {error}"));
-        }
-        let alert = confirmed.is_some_and(data::Tsunami::alert);
-        (status, alert, areas, notes)
-    }
 }
 
 fn keep_selection<T>(old: &[T], next: &[T], selected: usize, key: impl Fn(&T) -> &str) -> usize {
@@ -1549,6 +1270,7 @@ const SIXEL_RESIZE_QUIET: Duration = Duration::from_secs(1);
 #[derive(Default)]
 pub struct ResizeRedraw {
     dimensions: Option<(usize, usize)>,
+    sixel_cell: Option<(usize, usize)>,
     sixel_at: Option<Instant>,
 }
 
@@ -1557,7 +1279,13 @@ impl ResizeRedraw {
         let dimensions = (view.columns, view.rows);
         let previous = self.dimensions.replace(dimensions);
         let changed = previous != Some(dimensions);
-        if changed && previous.is_some() && matches!(view.map, Map::Image(Image::Sixel(_))) {
+        let Map::Image(Image::Sixel(cell)) = view.map else {
+            self.sixel_cell = None;
+            self.sixel_at = None;
+            return changed;
+        };
+        let cell_changed = self.sixel_cell.replace(cell).is_some_and(|old| old != cell);
+        if (changed && previous.is_some()) || cell_changed {
             self.sixel_at = Some(now + SIXEL_RESIZE_QUIET);
         }
         if self.sixel_at.is_some_and(|deadline| now >= deadline) {
@@ -1567,7 +1295,7 @@ impl ResizeRedraw {
         if self.sixel_at.is_some() {
             view.map = Map::Braille;
         }
-        changed
+        changed || cell_changed
     }
 }
 

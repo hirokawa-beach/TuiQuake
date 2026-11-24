@@ -18,6 +18,7 @@
 - [画面例](#画面例)
 - [特長](#特長)
 - [クイックスタート](#クイックスタート)
+  - [ダウンロードしたファイルを検証する](#ダウンロードしたファイルを検証する)
 - [必要な環境](#必要な環境)
 - [主なキー](#主なキー)
 - [設定](#設定)
@@ -59,9 +60,9 @@ _表示している地震は過去のものです。_
 
 ## クイックスタート
 
-リリースがあれば、OSとCPUに合うファイルをダウンロードしてください。 [Releases](https://github.com/hirokawa-beach/TuiQuake/releases)
+配布ファイルは GitHub Releases に掲載します。OSとCPUに合うファイルを選んでください。 [Releases](https://github.com/hirokawa-beach/TuiQuake/releases)
 
-リリースがまだなければ、ソースからビルドできます。 [ビルド手順](#ソースからビルド)
+ソースからビルドする場合は、ビルド手順を参照してください。 [ビルド手順](#ソースからビルド)
 
 | 環境                           | ファイル                                           |
 | ------------------------------ | -------------------------------------------------- |
@@ -74,6 +75,9 @@ _表示している地震は過去のものです。_
 `tuiquake-windows-x86_64.msi` を開いてインストールしてください。新しく開いたターミナルで `tuiquake` と入力すると起動できます。アンインストールはWindowsの「インストールされているアプリ」から行えます。
 
 インストールせずに使う場合は `tuiquake-windows-x86_64.exe` をダウンロードし、保存先を開いたPowerShellで `.\tuiquake-windows-x86_64.exe` を実行します。
+
+> [!NOTE]
+> Windows向けの .msi と .exe は未署名です。ダウンロード後の起動時に Microsoft Defender SmartScreen の警告が出る場合があります。 [SmartScreenの説明](https://learn.microsoft.com/en-us/windows/security/threat-protection/microsoft-defender-smartscreen/microsoft-defender-smartscreen-overview)
 
 **Linux（Ubuntu・Debianなど）**
 
@@ -152,14 +156,43 @@ chmod +x ./tuiquake-macos-aarch64
 
 </details>
 
+### ダウンロードしたファイルを検証する
+
+配布ファイルと同じリリースから SHA256SUMS.txt もダウンロードします。同じフォルダで、OSに合う手順を実行してください。
+
+**Windows（PowerShell）**
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\tuiquake-windows-x86_64.msi
+Get-FileHash -Algorithm SHA256 .\tuiquake-windows-x86_64.exe
+```
+
+ダウンロードしたファイルに対応する行だけ実行し、表示されたハッシュを SHA256SUMS.txt の同じファイル名の行と照合します。英字の大文字と小文字はどちらでも同じ値です。
+
+**Linux**
+
+```bash
+sha256sum --ignore-missing -c SHA256SUMS.txt
+```
+
+**macOS**
+
+```bash
+shasum -a 256 -c --ignore-missing SHA256SUMS.txt
+```
+
+Linux・macOSでは手元にあるファイルを検証し、一致したファイルに OK と表示されます。
+
 ## 必要な環境
 
 画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルエミュレーター(以後ターミナルと呼びます)が必要です。
 
-<details>
-<summary>画像表示に対応するターミナル一覧（20件）</summary>
+**作者が動作を確認したターミナル**は、Windowsの **Windows Terminal** と、Raspberry Pi OSの **foot・Rio Terminal** です。**macOSは作者による実機確認ができていません。**
 
-Terminal Troveの「Image Support」に掲載された20件です。表の「—」は、参照した資料で対応を確認できなかった方式です。 [Terminal Troveの比較表](https://terminaltrove.com/compare/terminals/)
+<details>
+<summary>ターミナルの画像描画方式（参考・20件）</summary>
+
+Terminal Troveの「Image Support」をもとにした、各ターミナルの画像描画方式の一覧です。表の「—」は、参照した資料で対応を確認できなかった方式です。 [Terminal Troveの比較表](https://terminaltrove.com/compare/terminals/)
 
 凡例: 🪟 Windows ／ 🐧 Linux ／ 🍎 macOS
 
@@ -242,7 +275,9 @@ Terminologyは `tycat`、Extratermは `show` で画像を表示できます。�
 
 ## ソースからビルド
 
-[Git](https://git-scm.com/install/) と [Rust](https://rust-lang.org/tools/install/) を用意します。Windows は [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)、Ubuntu は `build-essential`、macOS は Xcode Command Line Tools（`xcode-select --install`）も必要です。
+[Git](https://git-scm.com/install/) と **Rust 1.88以上**を用意します。バージョンは `rustc --version` で確認できます。OSのパッケージが古い場合は rustup を使ってください。 [Rustのインストール](https://rust-lang.org/tools/install/)
+
+Windows は [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)、Ubuntu は `build-essential`、macOS は Xcode Command Line Tools（`xcode-select --install`）も必要です。
 
 ```bash
 git clone https://github.com/hirokawa-beach/TuiQuake.git
@@ -289,6 +324,8 @@ Windows の PowerShell では `.\target\release\tuiquake.exe`、Linux / macOS �
 「5 アプリ情報」で確認できるバージョン、端末、描画方式と、問題が出たときの操作を添えてください。 [GitHub Issues](https://github.com/hirokawa-beach/TuiQuake/issues)
 
 ## English
+
+Download the package for your operating system and CPU from [GitHub Releases](https://github.com/hirokawa-beach/TuiQuake/releases), then follow the [quick start](#クイックスタート).
 
 TuiQuake is a Japanese-language terminal app for browsing earthquakes, station-level seismic intensity, earthquake early warnings, and tsunami bulletins. It offers Sixel, Kitty, and text maps.  
 It is an unofficial viewer. For safety decisions, consult official information from the JMA or local authorities.

@@ -309,7 +309,9 @@ fn about_keeps_the_disclaimer_visible_while_scrolling() {
             .text
             .contains("https://github.com/hirokawa-beach/TuiQuake/issues")
     );
-    assert!(!diagnostics.text.contains("コミット"));
+    assert!(diagnostics.text.contains("コミット"));
+    assert!(diagnostics.text.contains(env!("TUIQUAKE_BUILD_COMMIT")));
+    assert!(diagnostics.text.contains("ビルド日時"));
     assert!(diagnostics.text.contains("制作者"));
     assert!(diagnostics.text.contains("hirokawa-beach"));
     let logo = diagnostics.text.find(LOGO[0]).unwrap();

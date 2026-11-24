@@ -156,7 +156,7 @@ pub fn detect() -> Capabilities {
     }
 }
 
-fn terminal_cell() -> Option<ImageCell> {
+pub(crate) fn terminal_cell() -> Option<ImageCell> {
     let size = crossterm::terminal::window_size().ok()?;
     valid_cell(
         usize::from(size.width).checked_div(usize::from(size.columns))?,

@@ -1,0 +1,25 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="TuiQuake" Manufacturer="hirokawa-beach"
+           Version="$(var.Version)" UpgradeCode="42ea2e0d-21f7-47e0-aca7-601e0bb72c9b"
+           Language="1041" Scope="perUser">
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="より新しいバージョンの TuiQuake がインストールされています。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="PerUserProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="TuiQuake">
+        <Component Guid="08c8d009-d7d2-432a-a013-b23aed737dad">
+          <File Source="$(var.Executable)" Name="tuiquake.exe" />
+          <File Source="LICENSE" Name="LICENSE.txt" />
+          <File Source="THIRD_PARTY_NOTICES.txt" />
+          <File Source="$(var.RustNotice)" Name="RUST-STDLIB-NOTICES.html" />
+          <Environment Id="TuiQuakePath" Name="PATH" Action="set" Part="last"
+                       Value="[INSTALLFOLDER]" />
+          <RemoveFolder Id="RemoveTuiQuakeFolder" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\TuiQuake" Name="InstallFolder"
+                         Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>

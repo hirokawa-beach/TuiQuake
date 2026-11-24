@@ -55,10 +55,58 @@ jobs:
           "./$SOURCE" --help
           mkdir -p release-assets
           cp "$SOURCE" "release-assets/$ASSET"
+      - name: Build and test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          DOTNET_ROLL_FORWARD: Major
+        run: |
+          $wixTools = Join-Path $env:RUNNER_TEMP 'tuiquake-wix'
+          dotnet tool install wix --version 6.0.2 --tool-path $wixTools
+          if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed.' }
+
+          $exe = (Resolve-Path 'target/release/tuiquake.exe').Path
+          $versionOutput = & $exe --version
+          if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^TuiQuake (\d+\.\d+\.\d+)$') {
+            throw "Could not determine the MSI version from $versionOutput"
+          }
+          $version = $Matches[1]
+          $rustNotice = Join-Path (rustc +stable --print sysroot) 'share/doc/rust/COPYRIGHT-library.html'
+          $msi = Join-Path (Resolve-Path 'release-assets').Path 'tuiquake-windows-x86_64.msi'
+          & (Join-Path $wixTools 'wix.exe') build -arch x64 -pdbtype none -d "Version=$version" -d "Executable=$exe" -d "RustNotice=$rustNotice" -o $msi installer/TuiQuake.wxs
+          if ($LASTEXITCODE -ne 0) { throw 'MSI build failed.' }
+
+          function Invoke-Msi([string] $mode) {
+            $process = Start-Process msiexec.exe -ArgumentList "$mode `"$msi`" /qn /norestart" -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Windows Installer $mode failed with code $($process.ExitCode)." }
+          }
+
+          Invoke-Msi '/i'
+          try {
+            $folder = (Get-ItemProperty 'HKCU:\Software\TuiQuake').InstallFolder.TrimEnd('\')
+            $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            if (($userPath.Split(';').TrimEnd('\')) -notcontains $folder) {
+              throw 'TuiQuake was not added to the user PATH.'
+            }
+            $env:Path = "$userPath;$env:Path"
+            if ((Get-Command tuiquake.exe).Source -ne (Join-Path $folder 'tuiquake.exe')) {
+              throw 'tuiquake.exe did not resolve to the installed executable.'
+            }
+            $installedVersion = tuiquake.exe --version
+            if ($LASTEXITCODE -ne 0 -or $installedVersion -ne $versionOutput) {
+              throw 'The installed executable did not report the expected version.'
+            }
+          } finally {
+            Invoke-Msi '/x'
+          }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (($userPath -split ';').TrimEnd('\') -contains $folder -or (Test-Path (Join-Path $folder 'tuiquake.exe'))) {
+            throw 'The uninstall left the executable or its PATH entry in place.'
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
-          path: release-assets/${{ matrix.asset }}
+          path: release-assets/
           if-no-files-found: error
 
   publish:

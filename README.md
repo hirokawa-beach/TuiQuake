@@ -65,17 +65,15 @@ _表示している地震は過去のものです。_
 
 | 環境                           | ファイル                                           |
 | ------------------------------ | -------------------------------------------------- |
-| Windows（x86-64）              | `tuiquake-windows-x86_64.exe`                      |
+| Windows（x86-64） | `tuiquake-windows-x86_64.msi`（インストーラー） / `tuiquake-windows-x86_64.exe`（単体版） |
 | Linux（x86-64 / ARM64）        | `tuiquake-linux-x86_64` / `tuiquake-linux-aarch64` |
 | macOS（Intel / Apple Silicon） | `tuiquake-macos-x86_64` / `tuiquake-macos-aarch64` |
 
-ダウンロード先のディレクトリでファイルを実行します。以下は x86-64 の例です。
+**Windows**
 
-**Windows の PowerShell**
+`tuiquake-windows-x86_64.msi` を開いてインストールしてください。新しく開いたターミナルで `tuiquake` と入力すると起動できます。アンインストールはWindowsの「インストールされているアプリ」から行えます。
 
-```powershell
-.\tuiquake-windows-x86_64.exe
-```
+インストールせずに使う場合は `tuiquake-windows-x86_64.exe` をダウンロードし、保存先を開いたPowerShellで `.\tuiquake-windows-x86_64.exe` を実行します。
 
 **Linux**
 
@@ -84,11 +82,11 @@ chmod +x ./tuiquake-linux-x86_64
 ./tuiquake-linux-x86_64
 ```
 
-macOS でも、自分の機種用のファイル名で同じ手順を実行できます。
+Linuxの例はx86-64です。ARM64やmacOSでは、手順中のファイル名を自分の機種用に置き換えてください。
 
 ## 必要な環境
 
-画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。
+画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルエミュレーター(以後ターミナルと呼びます)が必要です。
 
 <details>
 <summary>画像表示に対応するターミナル一覧（20件）</summary>

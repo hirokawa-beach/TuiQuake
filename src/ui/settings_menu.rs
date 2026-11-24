@@ -315,7 +315,7 @@ mod tests {
         };
         let capabilities = Capabilities {
             sixel: Some((10, 20)),
-            kitty: false,
+            ..Default::default()
         };
         for columns in [46, 84] {
             let display = crate::screen::Display {

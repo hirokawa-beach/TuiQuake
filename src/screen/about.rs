@@ -19,8 +19,8 @@ pub struct AboutInfo<'a> {
     pub release: Option<&'a Release>,
 }
 
-fn terminal() -> String {
-    if env::var_os("WT_SESSION").is_some() {
+fn terminal(capabilities: &Capabilities) -> String {
+    if capabilities.windows_terminal || env::var_os("WT_SESSION").is_some() {
         return "Windows Terminal".into();
     }
     for name in ["TERM_PROGRAM", "TERM"] {
@@ -116,7 +116,7 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize, info: AboutI
     if let Some(availability) = &availability {
         diagnostics.push(("更新", availability));
     }
-    let terminal = terminal();
+    let terminal = terminal(info.capabilities);
     diagnostics.extend([
         ("コミット", env!("TUIQUAKE_BUILD_COMMIT")),
         ("ビルド日時", &built_at),

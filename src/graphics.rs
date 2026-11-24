@@ -112,6 +112,7 @@ pub const KITTY_COMMAND: &str = "\x1b_G";
 pub struct Capabilities {
     pub sixel: Option<ImageCell>,
     pub kitty: bool,
+    pub windows_terminal: bool,
 }
 
 impl Capabilities {
@@ -153,6 +154,7 @@ pub fn detect() -> Capabilities {
     Capabilities {
         sixel,
         kitty: replies.kitty,
+        windows_terminal,
     }
 }
 
@@ -372,6 +374,7 @@ mod tests {
         let images: Vec<_> = Capabilities {
             sixel: replies.cell.filter(|_| replies.sixel),
             kitty: replies.kitty,
+            ..Default::default()
         }
         .images()
         .collect();

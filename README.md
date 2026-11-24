@@ -82,39 +82,41 @@ macOS でも、自分の機種用のファイル名で同じ手順を実行で�
 
 画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。
 
+ターミナルアプリの対応OSをアイコンで示しています。🪟 Windows ／ 🐧 Linux ／ 🍎 macOS
+
 | ターミナルの例 | OS | 描画方式 |
 | --- | --- | --- |
-| [Windows Terminal 1.22以降](https://github.com/microsoft/terminal/discussions/18516) | Windows | Sixel |
-| [kitty](https://sw.kovidgoyal.net/kitty/) | Linux・macOS | Kitty |
-| [WezTerm](https://wezterm.org/features.html) | Windows・Linux・macOS | Kitty、Sixel（試験的） |
+| [Windows Terminal 1.22以降](https://github.com/microsoft/terminal/discussions/18516) | 🪟 | Sixel |
+| [kitty](https://sw.kovidgoyal.net/kitty/) | 🐧 🍎 | Kitty |
+| [WezTerm](https://wezterm.org/features.html) | 🪟 🐧 🍎 | Kitty、Sixel（試験的） |
 
 <details>
 <summary>画像表示に対応するターミナル一覧（20件）</summary>
 
 Terminal Troveの「Image Support」に掲載された20件です。表の「—」は、参照した資料で対応を確認できなかった方式です。 [Terminal Troveの比較表](https://terminaltrove.com/compare/terminals/)
 
-| ターミナル | Sixel | Kitty画像描画 |
-| --- | --- | --- |
-| [Bobcat](https://github.com/ismail-yilmaz/Bobcat#features) | 対応 | 対応 |
-| [cmux](https://github.com/manaflow-ai/cmux/blob/main/docs/customizing-appearance.md) | — | 対応 |
-| [Contour Terminal](https://contour-terminal.org/features/) | 対応 | 対応 |
-| [foot](https://man.archlinux.org/man/foot.ini.5.en) | 対応 | — |
-| [Ghostty](https://ghostty.org/docs/features) | — | 対応 |
-| [iTerm2](https://iterm2.com/documentation-images.html) | [対応](https://iterm2.com/downloads.html) | 対応 |
-| [kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/) | — | 対応 |
-| [Konsole](https://kde.org/announcements/changelogs/gear/22.04.0/) | 対応 | 一部対応 |
-| [Mintty](https://mintty.github.io/mintty.1.html) | 対応 | — |
-| [mlterm](https://github.com/arakiken/mlterm/blob/master/doc/en/ReleaseNote) | 対応 | — |
-| [Ratty](https://github.com/orhun/ratty) | — | 対応 |
-| [Rex](https://www.superlogical.com/rex/docs/installation) | — | [対応（比較表の記載）](https://terminaltrove.com/terminals/rex-terminal/) |
-| [Rio Terminal](https://rioterm.com/docs/features) | 対応 | 対応 |
-| [Tabby](https://github.com/Eugeny/tabby/blob/master/tabby-terminal/src/config.ts) | 対応（設定による） | — |
-| [Terminology](https://www.enlightenment.org/docs/apps/terminology#tycat) | — | — |
-| [Warp Terminal](https://docs.warp.dev/getting-started/migrate-to-warp/migrate-to-warp-from-ghostty/) | — | 一部対応 |
-| [WezTerm](https://wezterm.org/features.html) | 試験的 | 対応 |
-| [Windows Terminal](https://github.com/microsoft/terminal/discussions/18516) | 1.22以降 | — |
-| [xterm](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html) | 対応（VT340などの設定による） | — |
-| [Extraterm](https://github.com/sedwards2009/extraterm/blob/master/docs/guide.md#the-show-command) | — | — |
+| ターミナル | OS | Sixel | Kitty画像描画 |
+| --- | --- | --- | --- |
+| [Bobcat](https://github.com/ismail-yilmaz/Bobcat#features) | 🪟 🐧 🍎 | 対応 | 対応 |
+| [cmux](https://github.com/manaflow-ai/cmux/blob/main/docs/customizing-appearance.md) | 🍎 | — | 対応 |
+| [Contour Terminal](https://contour-terminal.org/features/) | 🪟 🐧 🍎 | 対応 | 対応 |
+| [foot](https://man.archlinux.org/man/foot.ini.5.en) | 🐧 | 対応 | — |
+| [Ghostty](https://ghostty.org/docs/features) | 🐧 🍎 | — | 対応 |
+| [iTerm2](https://iterm2.com/documentation-images.html) | 🍎 | [対応](https://iterm2.com/downloads.html) | 対応 |
+| [kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/) | 🐧 🍎 | — | 対応 |
+| [Konsole](https://kde.org/announcements/changelogs/gear/22.04.0/) | 🪟（[開発版](https://apps.kde.org/konsole/)） 🐧 🍎（ARM・開発版） | 対応 | 一部対応 |
+| [Mintty](https://mintty.github.io/mintty.1.html) | 🪟 | 対応 | — |
+| [mlterm](https://github.com/arakiken/mlterm/blob/master/doc/en/ReleaseNote) | 🪟 🐧 🍎（[旧macOSで動作確認](https://github.com/arakiken/mlterm)） | 対応 | — |
+| [Ratty](https://github.com/orhun/ratty) | 🪟 🐧 🍎 | — | 対応 |
+| [Rex](https://www.superlogical.com/rex/docs/installation) | 🪟（一部のベータ参加者） 🍎（ベータ） | — | [対応（比較表の記載）](https://terminaltrove.com/terminals/rex-terminal/) |
+| [Rio Terminal](https://rioterm.com/docs/features) | 🪟 🐧 🍎 | 対応 | 対応 |
+| [Tabby](https://github.com/Eugeny/tabby/blob/master/tabby-terminal/src/config.ts) | 🪟 🐧 🍎 | 対応（設定による） | — |
+| [Terminology](https://www.enlightenment.org/docs/apps/terminology#tycat) | 🐧 | — | — |
+| [Warp Terminal](https://docs.warp.dev/getting-started/migrate-to-warp/migrate-to-warp-from-ghostty/) | 🪟 🐧 🍎 | — | 一部対応 |
+| [WezTerm](https://wezterm.org/features.html) | 🪟 🐧 🍎 | 試験的 | 対応 |
+| [Windows Terminal](https://github.com/microsoft/terminal/discussions/18516) | 🪟 | 1.22以降 | — |
+| [xterm](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html) | 🪟（[Cygwin/X](https://cygwin.com/packages/summary/xterm.html)） 🐧 🍎（[XQuartz](https://www.xquartz.org/FAQs.html)） | 対応（VT340などの設定による） | — |
+| [Extraterm](https://github.com/sedwards2009/extraterm/blob/master/docs/guide.md#the-show-command) | 🪟 🐧 🍎 | — | — |
 
 Terminologyは `tycat`、Extratermは `show` で画像を表示できます。実際の描画方式は、使用中の端末でTuiQuakeを起動して確認してください。
 

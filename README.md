@@ -1,6 +1,6 @@
 # TuiQuake
 
-<img src="docs/media/tuiquake-logo.svg" alt="TuiQuake" width="480">
+<p><img src="docs/media/tuiquake-icon.png" alt="" width="144" align="middle"> <img src="docs/media/tuiquake-logo.svg" alt="TuiQuake" width="440" align="middle"></p>
 
 日本の地震情報、緊急地震速報、津波情報をターミナルエミュレーター(以後ターミナルと呼ぶ)上で確認できます。
 

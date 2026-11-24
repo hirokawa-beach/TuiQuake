@@ -1,4 +1,4 @@
-use super::{Extent, Location, P_WAVE, Raster, S_WAVE, project};
+use super::{Extent, Location, P_WAVE, Raster, S_WAVE, project, travel_times};
 
 // Constant-speed teaching model for the fictional demo.
 const EARTH_RADIUS_KM: f64 = 6371.0;
@@ -10,17 +10,30 @@ fn surface_radius(speed: f64, seconds: f64, depth: f64) -> Option<f64> {
     (distance > depth).then(|| (distance.powi(2) - depth.powi(2)).sqrt())
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub struct Wavefront([Option<f64>; 2]);
+
+impl Wavefront {
+    pub fn demo(depth: u32, seconds: f64) -> Self {
+        Self([P_SPEED, S_SPEED].map(|speed| surface_radius(speed, seconds, f64::from(depth))))
+    }
+
+    pub fn live(depth: u32, seconds: f64) -> Option<Self> {
+        let radii = travel_times::radii(depth, seconds);
+        radii.iter().any(Option::is_some).then_some(Self(radii))
+    }
+}
+
 impl Raster {
-    pub(super) fn draw_demo_waves(
+    pub(super) fn draw_wavefront(
         &mut self,
         center: Location,
-        depth: f64,
-        seconds: f64,
+        wavefront: Wavefront,
         extent: Extent,
     ) {
         let (sin_lat, cos_lat) = center.lat.to_radians().sin_cos();
-        for (speed, color) in [(P_SPEED, P_WAVE), (S_SPEED, S_WAVE)] {
-            let Some(radius) = surface_radius(speed, seconds, depth) else {
+        for (radius, color) in wavefront.0.into_iter().zip([P_WAVE, S_WAVE]) {
+            let Some(radius) = radius else {
                 continue;
             };
             let (sin_dist, cos_dist) = (radius / EARTH_RADIUS_KM).sin_cos();
@@ -65,10 +78,9 @@ mod tests {
             lat: 38.0,
         };
         let (x, y) = project(center);
-        raster.draw_demo_waves(
+        raster.draw_wavefront(
             center,
-            45.0,
-            18.0,
+            Wavefront::demo(45, 18.0),
             Extent {
                 west: x - 2.0,
                 north: y + 2.0,

@@ -6,7 +6,10 @@ use std::{
 #[cfg(test)]
 use chrono::DateTime;
 
-use crate::data::{Bulletin, ServerClock, Stamp};
+use crate::{
+    data::{Bulletin, Provider, ServerClock, Stamp},
+    map::Wavefront,
+};
 
 const ACTIVE_FOR: chrono::TimeDelta = chrono::TimeDelta::seconds(120);
 const FUTURE_TOLERANCE: chrono::TimeDelta = chrono::TimeDelta::seconds(30);
@@ -79,6 +82,26 @@ impl State {
 
     pub fn can_confirm_idle(&self) -> bool {
         self.clock.is_some() && self.notice.as_ref().is_none_or(|(_, uncertain)| !uncertain)
+    }
+
+    pub fn wavefront(&self, bulletin: &Bulletin, now: Instant) -> Option<Wavefront> {
+        if !bulletin.eew
+            || bulletin.eew_cancelled
+            || bulletin.plum_assumed_hypocenter
+            || bulletin.provider != Provider::Wolfx
+        {
+            return None;
+        }
+        let (_, depth) = bulletin.epicenter.zip(bulletin.depth)?;
+        let origin = bulletin.origin?;
+        let issued = bulletin.issued?;
+        let server_now = self.clock?.at(now);
+        if origin > issued || issued > server_now {
+            return None;
+        }
+        // Sample twice per second to limit image redraws.
+        let half_seconds = server_now.signed_duration_since(origin).num_milliseconds() / 500;
+        Wavefront::live(depth, half_seconds as f64 / 2.0)
     }
 
     pub fn warning_seconds(&self, id: &str, now: Instant) -> Option<u64> {

@@ -5,9 +5,11 @@ use std::{
 
 use crate::data::{Bulletin, Location, Result};
 
+mod travel_times;
 mod tsunami;
 mod waves;
 pub use tsunami::{has_coast, tsunami_color};
+pub use waves::Wavefront;
 
 pub type Color = u8;
 pub type Rgb = (u8, u8, u8);
@@ -120,7 +122,7 @@ struct MapViewport {
 pub struct View {
     pub national: bool,
     pub eew_layer: EewLayer,
-    pub demo_wave_seconds: Option<f64>,
+    pub wavefront: Option<Wavefront>,
     manual_zoom: Option<u16>,
     center: Option<(f64, f64)>,
     rendered: Option<MapViewport>,
@@ -131,7 +133,7 @@ impl View {
         Self {
             national,
             eew_layer: EewLayer::default(),
-            demo_wave_seconds: None,
+            wavefront: None,
             manual_zoom: None,
             center: None,
             rendered: None,
@@ -576,10 +578,8 @@ impl Atlas {
             }
         }
         self.draw_base(raster, extent, colors.into_iter(), image);
-        if let Some(seconds) = view.demo_wave_seconds
-            && let Some((center, depth)) = bulletin.epicenter.zip(bulletin.depth)
-        {
-            raster.draw_demo_waves(center, f64::from(depth), seconds, extent);
+        if let Some((wavefront, center)) = view.wavefront.zip(bulletin.epicenter) {
+            raster.draw_wavefront(center, wavefront, extent);
         }
         if image && layer == Layer::Stations {
             for point in bulletin.stations.iter().rev() {

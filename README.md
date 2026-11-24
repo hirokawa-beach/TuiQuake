@@ -80,9 +80,17 @@ macOS でも、自分の機種用のファイル名で同じ手順を実行で�
 
 ## 必要な環境
 
-- Windowsでは Windows Terminal と等幅フォントの Cascadia Mono を使えます。 [Windows Terminal の外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
-- Linux / macOS では、Kitty または Sixel に対応したターミナルで画像地図を表示できます。 [Kitty のグラフィックスプロトコル](https://sw.kovidgoyal.net/kitty/graphics-protocol.html) [WezTerm の対応機能](https://wezterm.org/features.html)
-- どのOSでも、日本語を表示できる等幅フォントが必要です。ライブ配信を受信するにはインターネットに接続してください。地図の描画方式は端末の検出結果に合わせて選べます。
+画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。
+
+| ターミナルの例 | OS | 描画方式 |
+| --- | --- | --- |
+| [Windows Terminal 1.22以降](https://github.com/microsoft/terminal/discussions/18516) | Windows | Sixel |
+| [kitty](https://sw.kovidgoyal.net/kitty/) | Linux・macOS | Kitty |
+| [WezTerm](https://wezterm.org/features.html) | Windows・Linux・macOS | Kitty、Sixel（試験的） |
+
+起動時の選択画面に表示された描画方式を選んでください。画像描画方式が検出されない場合は、Unicode Braille（表示調整中）で起動できます。
+
+日本語を表示できる等幅フォントを使ってください。Windows Terminalでは Cascadia Mono を使えます。ライブ配信の受信にはインターネット接続が必要です。 [Windows Terminal の外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
 
 ## 主なキー
 

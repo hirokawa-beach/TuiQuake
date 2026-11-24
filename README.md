@@ -66,7 +66,7 @@ _表示している地震は過去のものです。_
 | 環境                           | ファイル                                           |
 | ------------------------------ | -------------------------------------------------- |
 | Windows（x86-64） | `tuiquake-windows-x86_64.msi`（インストーラー） / `tuiquake-windows-x86_64.exe`（単体版） |
-| Linux（x86-64 / ARM64）        | `tuiquake-linux-x86_64` / `tuiquake-linux-aarch64` |
+| Linux（x86-64 / ARM64） | `tuiquake-linux-x86_64.deb` / `tuiquake-linux-aarch64.deb`（Ubuntu・Debian向け）。拡張子のない実行ファイルも選べます。 |
 | macOS（Intel / Apple Silicon） | `tuiquake-macos-x86_64` / `tuiquake-macos-aarch64` |
 
 **Windows**
@@ -75,14 +75,25 @@ _表示している地震は過去のものです。_
 
 インストールせずに使う場合は `tuiquake-windows-x86_64.exe` をダウンロードし、保存先を開いたPowerShellで `.\tuiquake-windows-x86_64.exe` を実行します。
 
-**Linux**
+**Linux（Ubuntu・Debianなど）**
+
+OSとCPUに合う `.deb` を保存したフォルダでインストールします。以下はx86-64の例です。
+
+```bash
+sudo apt install ./tuiquake-linux-x86_64.deb
+tuiquake
+```
+
+ARM64ではファイル名を `tuiquake-linux-aarch64.deb` に置き換えてください。アンインストールは `sudo apt remove tuiquake` で行えます。
+
+**Linux・macOSで実行ファイルを直接使う**
+
+実行ファイルを保存したフォルダで実行します。以下はLinux x86-64の例です。Linux ARM64やmacOSではファイル名を自分の機種用に置き換えてください。
 
 ```bash
 chmod +x ./tuiquake-linux-x86_64
 ./tuiquake-linux-x86_64
 ```
-
-Linuxの例はx86-64です。ARM64やmacOSでは、手順中のファイル名を自分の機種用に置き換えてください。
 
 ## 必要な環境
 

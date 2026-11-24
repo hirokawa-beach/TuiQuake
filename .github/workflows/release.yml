@@ -103,6 +103,21 @@ jobs:
           if (($userPath -split ';').TrimEnd('\') -contains $folder -or (Test-Path (Join-Path $folder 'tuiquake.exe'))) {
             throw 'The uninstall left the executable or its PATH entry in place.'
           }
+      - name: Build and test Debian package
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          rustup component add rust-docs --toolchain stable
+          rust_notice="$(rustc +stable --print sysroot)/share/doc/rust/COPYRIGHT-library.html"
+          package="./release-assets/$ASSET.deb"
+          bash installer/build-deb.sh target/release/tuiquake "$package" "$rust_notice"
+          sudo apt-get install -y "$package"
+          trap 'sudo apt-get remove -y tuiquake' EXIT
+          test "$(command -v tuiquake)" = /usr/bin/tuiquake
+          test "$(tuiquake --version)" = "$(target/release/tuiquake --version)"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}

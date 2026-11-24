@@ -257,9 +257,9 @@ Windows の PowerShell では `.\target\release\tuiquake.exe`、Linux / macOS �
 
 ### 地図に隙間が出る、文字の桁がずれる
 
-Windows Terminalでは「設定 → プロファイル → 既定値 → 外観」で「フォント フェイス」に `Cascadia Mono` を指定できます。 [Windows Terminalの外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
+Windows Terminalで「設定 → 使用中のプロファイル → 外観 → フォント フェイス」を開き、まず既定の `Cascadia Mono` を選んでください。日本語の字形はターミナルが別のフォントで補います。 [Windows Terminalの外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
 
-日本語と半角文字の桁がずれるときは、日本語を含む等幅フォントの `Noto Sans Mono CJK JP` を試してください。 [Noto Sans CJK のダウンロード案内](https://github.com/notofonts/noto-cjk/tree/main/Sans#language-specific-otfs)
+日本語を含むフォントを指定するなら、インストール済みの `BIZ UDGothic` も選べます。`Noto Sans Mono CJK JP` は環境によってWindows Terminalで「非等幅フォント」と表示されます。 [BIZ UDGothicの情報](https://learn.microsoft.com/ja-jp/typography/font-list/biz-udgothic)
 
 ### 画像地図が表示されない
 

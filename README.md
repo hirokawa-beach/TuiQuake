@@ -74,6 +74,8 @@ _表示している地震は過去のものです。_
 
 ### Linux（Ubuntu・Debian向けの .deb）
 
+64ビットOSと `libc6 2.34` 以上が必要です。Raspberry Pi OSではBookworm以降の64ビット版を使ってください。
+
 x86-64は `tuiquake_0.1.0_amd64.deb`、ARM64は `tuiquake_0.1.0_arm64.deb` をダウンロードします。保存先のフォルダで次を実行してください。コマンドがCPUに合うファイル名を選びます。
 
 ```bash
@@ -155,6 +157,7 @@ macOSは ~~作者が林檎信者ではないので~~ 実機確認ができてい
 | 地震履歴を選ぶ / 各地の震度をスクロール     | `↑` `↓` / `←` `→`                               |
 | 地図を移動 / 拡大・縮小                     | `W` `A` `S` `D` / `+` `−`                       |
 | 地震の震度表示を切り替え（地域別 / 観測点） | `V`                                             |
+| 同時に出ているEEWから地図に表示する速報を選ぶ | `↑` `↓`                                        |
 | EEWの地図を切り替え（警報対象 / 推定震度）  | `V`                                             |
 | 津波の地図を切り替え（全国 / 対象沿岸）     | `Z`                                             |
 | 文字で詳細を表示                            | `I`                                             |
@@ -188,7 +191,8 @@ Wolfxが復旧すると、元の配信へ戻ります。
 ### 緊急地震速報（EEW）
 
 - 配信元のサーバー時刻を基準に、発表から120秒未満の報を表示します。
-- 一度警報が出ると、その後の予報でも赤い帯と警報対象地域が残ります。
+- 一度警報が出ると、同じ地震の予報が続いても赤い帯と警報対象地域が残ります。
+- 別の地震の速報が重なったときは、先に出た速報を画面上部に残します。`↑` `↓` で地図に表示する速報を選べます。
 - 警報の続報で対象地域を追加します。取消報を受けると警報表示を消します。
 - 地図は `V` で警報対象と推定震度を切り替えられます。推定震度は気象庁の配信値です。
 - 震度に幅があるときは上限を、下限だけが示されたときはその下限を地図の色に使います。受信した範囲は一覧で確認できます。
@@ -267,7 +271,7 @@ Windows Terminalでは「設定 → プロファイル → 既定値 → 外観�
 
 ## English
 
-Download the package for your operating system and CPU from [GitHub Releases](https://github.com/hirokawa-beach/TuiQuake/releases), then follow the [quick start](#クイックスタート).
+Download the package for your operating system and CPU from [GitHub Releases](https://github.com/hirokawa-beach/TuiQuake/releases), then follow the [installation guide](#導入方法).
 
 TuiQuake is a Japanese-language terminal app for browsing earthquakes, station-level seismic intensity, earthquake early warnings, and tsunami bulletins. It offers Sixel, Kitty, and text maps.  
 It is an unofficial viewer. For safety decisions, consult official information from the JMA or local authorities.

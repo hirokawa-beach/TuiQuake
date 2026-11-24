@@ -13,6 +13,7 @@ pub enum HelpTopic {
     },
     Eew {
         active: bool,
+        overlapping: bool,
     },
     Tsunami,
     Demo {
@@ -70,8 +71,14 @@ impl HelpTopic {
                 }
                 (tab, bindings)
             }
-            Self::Eew { active } => {
+            Self::Eew {
+                active,
+                overlapping,
+            } => {
                 let mut bindings = vec![("I", "受信した速報の文字詳細を開く")];
+                if overlapping {
+                    bindings.insert(0, ("↑ / ↓", "地図に表示する速報を選ぶ"));
+                }
                 if active {
                     bindings.push(("V", "警報対象・推定震度の地図を切り替え"));
                     bindings.extend(MAP_BINDINGS);

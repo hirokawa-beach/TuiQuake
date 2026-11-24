@@ -1372,6 +1372,6 @@ mod tests;
 
 pub use about::{AboutInfo, about};
 pub use help::{HelpOverlay, HelpTopic, help};
-pub use panels::detail;
+pub use panels::{append_eew_events, detail};
 pub use render::Renderer;
 use stations::{ReadingLine, intensity_heading, intensity_readings};

@@ -402,6 +402,7 @@ pub struct App {
     connection_error: Option<String>,
     history_error: Option<String>,
     eew: eew::State,
+    eew_selection: Option<String>,
     tsunami: TsunamiTab,
     demo: DemoState,
     release: Option<Release>,
@@ -437,6 +438,7 @@ impl App {
             connection_error: None,
             history_error: None,
             eew: eew::State::default(),
+            eew_selection: None,
             tsunami: TsunamiTab::default(),
             demo: DemoState::new(delay),
             release: None,
@@ -490,7 +492,7 @@ impl App {
 
     pub fn newest(&self) -> Option<&Bulletin> {
         self.eew
-            .active()
+            .latest_report()
             .or_else(|| self.reports.first().map(|report| &report.bulletin))
     }
 
@@ -518,10 +520,37 @@ impl App {
     fn len(&self) -> usize {
         match self.tab {
             Tab::Quake => self.reports.len(),
-            Tab::Eew => usize::from(self.eew.active().is_some()),
+            Tab::Eew => self.eew.reports().count(),
             Tab::Tsunami | Tab::About | Tab::Settings => 0,
             Tab::Demo => self.demo.frames.len(),
         }
+    }
+
+    fn eew_index(&self) -> usize {
+        self.eew_selection
+            .as_deref()
+            .and_then(|id| {
+                self.eew
+                    .reports()
+                    .position(|report| report.eew_event_id.as_deref() == Some(id))
+            })
+            .unwrap_or_else(|| self.eew.reports().count().saturating_sub(1))
+    }
+
+    fn selected_eew(&self) -> Option<&Bulletin> {
+        match self.eew_selection.as_deref() {
+            Some(id) => self
+                .eew
+                .reports()
+                .find(|report| report.eew_event_id.as_deref() == Some(id))
+                .or_else(|| self.eew.active()),
+            None => self.eew.active(),
+        }
+    }
+
+    fn eew_warning_seconds(&self, now: Instant) -> Option<u64> {
+        let id = self.selected_eew()?.eew_event_id.as_deref()?;
+        self.eew.warning_seconds(id, now)
     }
 
     fn change_tab(&mut self, next: Tab) {
@@ -652,6 +681,24 @@ impl App {
                     || (self.tab == Tab::Eew && self.len() == 0)
                 {
                     self.scroll = self.scroll.saturating_add_signed(direction);
+                } else if self.tab == Tab::Eew {
+                    let limit = self.len().saturating_sub(1);
+                    let current = self.eew_index();
+                    let next = current.saturating_add_signed(direction).min(limit);
+                    if next == current {
+                        return false;
+                    }
+                    self.eew_selection = if next == limit {
+                        None
+                    } else {
+                        self.eew
+                            .reports()
+                            .nth(next)
+                            .and_then(|report| report.eew_event_id.clone())
+                    };
+                    self.view.reset();
+                    self.scroll = 0;
+                    self.warning_seconds = self.eew_warning_seconds(now);
                 } else {
                     let limit = self.len().saturating_sub(1);
                     let selected = &mut self.selection[self.tab.index()];
@@ -766,6 +813,12 @@ impl App {
         let mut changed = false;
         let mut reports_changed = false;
         let mut eew_changed = false;
+        let previous_eew = if self.tab == Tab::Eew {
+            self.selected_eew()
+                .and_then(|report| report.eew_event_id.clone())
+        } else {
+            None
+        };
         while let Ok(message) = self.incoming.try_recv() {
             match message {
                 Reply::UpdateAvailable(release) => {
@@ -875,15 +928,28 @@ impl App {
             changed |= self.tab == Tab::Quake;
         }
         let expired = self.eew.expire(now);
+        if expired
+            && let Some(id) = self.eew_selection.as_deref()
+            && !self
+                .eew
+                .reports()
+                .any(|report| report.eew_event_id.as_deref() == Some(id))
+        {
+            self.eew_selection = None;
+        }
         if self.tab == Tab::Eew && (eew_changed || expired) {
-            self.scroll = 0;
-            if expired {
+            let selected = self
+                .selected_eew()
+                .and_then(|report| report.eew_event_id.as_deref());
+            if previous_eew.as_deref() != selected {
+                self.scroll = 0;
                 self.page = Page::Map;
+                self.view.reset();
             }
         }
         changed |= eew_changed || expired;
         changed |= self.tsunami.state.update(now);
-        let warning_seconds = self.eew.warning_seconds(now);
+        let warning_seconds = self.eew_warning_seconds(now);
         changed |= self.tab == Tab::Eew && self.warning_seconds != warning_seconds;
         self.warning_seconds = warning_seconds;
 
@@ -927,7 +993,7 @@ impl App {
                     ),
                 )
             }),
-            Tab::Eew => self.eew.active().map(|bulletin| {
+            Tab::Eew => self.selected_eew().map(|bulletin| {
                 (
                     Cow::Borrowed(bulletin),
                     format!("{} · {}", bulletin.label, bulletin.provider.label()),
@@ -983,6 +1049,7 @@ impl App {
             },
             Tab::Eew => HelpTopic::Eew {
                 active: self.eew.active().is_some(),
+                overlapping: self.eew.reports().nth(1).is_some(),
             },
             Tab::Tsunami => HelpTopic::Tsunami,
             Tab::Demo => HelpTopic::Demo {
@@ -998,7 +1065,7 @@ impl App {
     fn menu_items(&self) -> [screen::MenuItem<'static>; Tab::MENU.len()] {
         Tab::MENU.map(|tab| {
             let bulletin = match tab {
-                Tab::Eew => self.eew.active(),
+                Tab::Eew => self.eew.alert(),
                 _ => None,
             };
             let (label, notice) = match (tab, bulletin.filter(|bulletin| bulletin.eew)) {
@@ -1114,6 +1181,10 @@ impl App {
             );
             return Ok(draw(&frame)?);
         }
+        if self.tab == Tab::Eew && self.len() > 1 {
+            let reports: Vec<_> = self.eew.reports().collect();
+            screen::append_eew_events(&mut menu, &reports, self.eew_index(), display);
+        }
         let Some((bulletin, banner)) = self.current() else {
             return Ok(());
         };
@@ -1171,6 +1242,10 @@ impl App {
                 &["B 履歴", "↑↓ 選択", "V 地域別/観測点"]
             }
             Tab::Quake => &["↑↓ 選択", "←→ 震度一覧", "V 地域別/観測点"],
+            Tab::Eew if self.len() > 1 && !bulletin.eew_cancelled => {
+                &["↑↓ 速報を選択", "V 地図表示"]
+            }
+            Tab::Eew if self.len() > 1 => &["↑↓ 速報を選択"],
             Tab::Eew if !bulletin.eew_cancelled => &["V 地図表示"],
             Tab::Demo => {
                 let playback = if self.demo.next.is_some() {
@@ -1258,7 +1333,7 @@ impl App {
             (None, _) => "○ 接続中",
         };
         let quiet = self.connected == Some(true) && self.eew.can_confirm_idle();
-        let eew = match self.eew.active() {
+        let eew = match self.eew.alert() {
             Some(report) if report.eew_cancelled => ("EEW 取消", None),
             Some(report) if report.warning => ("EEW 警報", Some(MenuNotice::Warning)),
             Some(report) if report.has_eew_warning() => ("EEW 警報あり", Some(MenuNotice::Warning)),

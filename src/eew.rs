@@ -22,9 +22,13 @@ struct ReceivedEvent {
     cancelled: bool,
     warning_issued: Option<Stamp>,
     warning_areas: Vec<String>,
+    last: Option<ReportOrder>,
+    active: Option<ActiveReport>,
 }
 
-fn report_order(report: &Bulletin) -> (Option<Stamp>, Option<u64>, bool, bool) {
+type ReportOrder = (Option<Stamp>, Option<u64>, bool, bool);
+
+fn report_order(report: &Bulletin) -> ReportOrder {
     (
         report.issued,
         report.eew_serial,
@@ -37,8 +41,6 @@ fn report_order(report: &Bulletin) -> (Option<Stamp>, Option<u64>, bool, bool) {
 pub struct State {
     clock: Option<ServerClock>,
     waiting: Vec<Bulletin>,
-    active: Option<ActiveReport>,
-    last: Option<(Option<Stamp>, Option<u64>, bool, bool)>,
     seen: VecDeque<ReceivedEvent>,
     notice: Option<(String, bool)>,
     latest: Option<(Stamp, bool)>,
@@ -46,8 +48,25 @@ pub struct State {
 }
 
 impl State {
+    pub fn reports(&self) -> impl DoubleEndedIterator<Item = &Bulletin> {
+        self.seen
+            .iter()
+            .filter_map(|event| event.active.as_ref().map(|report| report.bulletin.as_ref()))
+    }
+
     pub fn active(&self) -> Option<&Bulletin> {
-        self.active.as_ref().map(|report| report.bulletin.as_ref())
+        self.reports().next_back()
+    }
+
+    pub fn latest_report(&self) -> Option<&Bulletin> {
+        self.reports().max_by_key(|report| report_order(report))
+    }
+
+    pub fn alert(&self) -> Option<&Bulletin> {
+        self.reports()
+            .rfind(|report| report.has_eew_warning())
+            .or_else(|| self.reports().rfind(|report| !report.eew_cancelled))
+            .or_else(|| self.active())
     }
 
     pub fn notice(&self) -> Option<&str> {
@@ -62,8 +81,13 @@ impl State {
         self.clock.is_some() && self.notice.as_ref().is_none_or(|(_, uncertain)| !uncertain)
     }
 
-    pub fn warning_seconds(&self, now: Instant) -> Option<u64> {
-        let report = self.active.as_ref()?;
+    pub fn warning_seconds(&self, id: &str, now: Instant) -> Option<u64> {
+        let report = self
+            .seen
+            .iter()
+            .find(|event| event.id == id)?
+            .active
+            .as_ref()?;
         let issued = report.bulletin.issued?;
         let warning = report.bulletin.eew_warning_issued?;
         let remaining =
@@ -112,27 +136,28 @@ impl State {
     }
 
     pub fn receive(&mut self, mut report: Box<Bulletin>, now: Instant) -> bool {
-        let order = report_order(&report);
-        let newer = self.last.is_none_or(|prior| prior < order);
-        let event_id = report.eew_event_id.as_deref();
-        let same_event = event_id.is_some()
-            && self.active().is_some_and(|active| {
-                !active.eew_cancelled && active.eew_event_id.as_deref() == event_id
-            });
-        // A warning can arrive after a newer forecast for the same event.
-        let late_warning = same_event && report.has_eew_warning();
-        // Cancellation is keyed by event, regardless of the report number.
-        let known_cancellation = report.eew_cancelled
-            && self
-                .seen
-                .iter()
-                .any(|event| Some(event.id.as_str()) == event_id && !event.cancelled);
-        if !newer && !late_warning && !known_cancellation {
-            return false;
-        }
+        let Some(id) = report.eew_event_id.as_deref() else {
+            return self.invalid("地震IDがありません");
+        };
         let Some(issued) = report.issued else {
             return self.invalid("発表時刻がありません");
         };
+        let order = report_order(&report);
+        let previous = self.seen.iter().position(|event| event.id == id);
+        let event = previous.map(|index| &self.seen[index]);
+        if !report.eew_cancelled && event.is_some_and(|event| event.cancelled) {
+            return false;
+        }
+        let newer = event
+            .and_then(|event| event.last)
+            .is_none_or(|prior| prior < order);
+        let late_warning =
+            !newer && event.is_some_and(|event| event.active.is_some()) && report.has_eew_warning();
+        let known_cancellation =
+            report.eew_cancelled && event.is_some_and(|event| !event.cancelled);
+        if !newer && !late_warning && !known_cancellation {
+            return false;
+        }
         let stamp = issued.format("%m/%d %H:%M:%S");
         let Some(clock) = self.clock else {
             let message = format!(
@@ -162,59 +187,82 @@ impl State {
                 true,
             );
         }
-        if let Some(id) = report.eew_event_id.as_deref()
-            && self
-                .seen
-                .iter()
-                .any(|event| event.id == id && event.cancelled)
-            && !report.eew_cancelled
-        {
-            return false;
-        }
-        self.record_event(&mut report, issued);
-        if !newer && report.eew_cancelled && !same_event {
-            return false;
-        }
-        if !newer && late_warning {
-            let active = &mut self.active.as_mut().expect("same active event").bulletin;
+        let index = match previous {
+            Some(index) => index,
+            None => {
+                if self.seen.len() >= 256
+                    && let Some(inactive) =
+                        self.seen.iter().position(|event| event.active.is_none())
+                {
+                    self.seen.remove(inactive);
+                }
+                self.seen.push_back(ReceivedEvent {
+                    id: id.to_owned(),
+                    announced: false,
+                    cancelled: false,
+                    warning_issued: None,
+                    warning_areas: Vec::new(),
+                    last: None,
+                    active: None,
+                });
+                self.seen.len() - 1
+            }
+        };
+        let event = &mut self.seen[index];
+        event.last = event.last.max(Some(order));
+        Self::record_event(event, &mut report, issued, &mut self.bell);
+        if late_warning && let Some(active) = &mut event.active {
+            let active = &mut active.bulletin;
             let changed = active.eew_warning_issued != report.eew_warning_issued
                 || active.warning_areas != report.warning_areas;
             active.eew_warning_issued = report.eew_warning_issued;
             active.warning_areas = report.warning_areas;
             return changed;
         }
+        if !newer && report.eew_cancelled && event.active.is_none() {
+            return false;
+        }
+        if report.eew_cancelled
+            && report.name.is_empty()
+            && let Some(active) = &event.active
+        {
+            report.name.clone_from(&active.bulletin.name);
+        }
         let remaining = (ACTIVE_FOR - age.max(chrono::TimeDelta::zero()))
             .to_std()
             .unwrap_or(Duration::ZERO);
-        if newer {
-            self.last = Some(order);
-        }
-        self.remember(issued, false);
-        self.active = Some(ActiveReport {
+        event.active = Some(ActiveReport {
             bulletin: report,
             expires: now + remaining,
         });
+        self.remember(issued, false);
         self.notice = None;
         true
     }
 
     pub fn expire(&mut self, now: Instant) -> bool {
-        if let Some(report) = &self.active
-            && now >= report.expires
-        {
-            if let Some(issued) = report.bulletin.issued {
-                self.remember(issued, true);
-            }
-            self.active = None;
-            if self.waiting.is_empty()
-                && self.notice.as_ref().is_none_or(|(_, uncertain)| !uncertain)
+        let mut expired = None;
+        for event in &mut self.seen {
+            if event
+                .active
+                .as_ref()
+                .is_some_and(|report| now >= report.expires)
+                && let Some(report) = event.active.take()
             {
-                self.note("最後に受信したEEWは表示時間を過ぎました".into(), false);
+                expired = expired.max(report.bulletin.issued);
             }
-            true
-        } else {
-            false
         }
+        let Some(issued) = expired else {
+            return false;
+        };
+        self.remember(issued, true);
+        if self.active().is_none()
+            && self.waiting.is_empty()
+            && self.notice.as_ref().is_none_or(|(_, uncertain)| !uncertain)
+        {
+            self.note("最後に受信したEEWは表示時間を過ぎました".into(), false);
+        }
+        true
     }
 
     fn note(&mut self, message: String, uncertain: bool) -> bool {
@@ -226,28 +274,12 @@ impl State {
         true
     }
 
-    fn record_event(&mut self, report: &mut Bulletin, issued: Stamp) {
-        let Some(id) = &report.eew_event_id else {
-            return;
-        };
-        let index = self
-            .seen
-            .iter()
-            .position(|event| event.id == *id)
-            .unwrap_or_else(|| {
-                if self.seen.len() >= 256 {
-                    self.seen.pop_front();
-                }
-                self.seen.push_back(ReceivedEvent {
-                    id: id.clone(),
-                    announced: false,
-                    cancelled: false,
-                    warning_issued: None,
-                    warning_areas: Vec::new(),
-                });
-                self.seen.len() - 1
-            });
-        let event = &mut self.seen[index];
+    fn record_event(
+        event: &mut ReceivedEvent,
+        report: &mut Bulletin,
+        issued: Stamp,
+        bell: &mut bool,
+    ) {
         if report.eew_cancelled {
             event.cancelled = true;
             event.warning_issued = None;
@@ -255,7 +287,7 @@ impl State {
         } else {
             let warned = report.has_eew_warning();
             let already_warned = event.warning_issued.is_some() || !event.warning_areas.is_empty();
-            self.bell |= !event.announced || warned && !already_warned;
+            *bell |= !event.announced || warned && !already_warned;
             event.announced = true;
             if report.warning {
                 event.warning_issued = Some(
@@ -345,7 +377,7 @@ mod tests {
         update.warning = true;
         assert!(state.receive(update.clone(), now));
         assert_eq!(
-            state.warning_seconds(now + Duration::from_secs(7)),
+            state.warning_seconds("fixture", now + Duration::from_secs(7)),
             Some(10)
         );
         assert!(state.take_bell());
@@ -358,6 +390,31 @@ mod tests {
         assert!(state.receive(update, now));
         assert!(!state.take_bell());
         assert!(state.active().unwrap().eew_cancelled);
+    }
+
+    #[test]
+    fn overlapping_reports_accept_older_warnings_and_expire_independently() {
+        let now = Instant::now();
+        let clock = clock(now);
+        let mut state = State::default();
+        state.sync(clock, now);
+        let mut forecast = report(clock, 2);
+        forecast.eew_event_id = Some("other".into());
+        assert!(state.receive(forecast, now));
+        let mut warning = report(clock, 5);
+        warning.warning = true;
+        warning.warning_areas = vec!["熊本県熊本".into()];
+        assert!(state.receive(warning, now));
+        assert_eq!(state.reports().count(), 2);
+        assert_eq!(state.alert().unwrap().warning_areas, ["熊本県熊本"]);
+        assert!(state.expire(now + Duration::from_secs(115)));
+        assert_eq!(state.reports().count(), 1);
+        assert_eq!(
+            state.active().unwrap().eew_event_id.as_deref(),
+            Some("other")
+        );
+        assert!(state.expire(now + Duration::from_secs(118)));
+        assert!(state.active().is_none());
     }
 
     #[test]
@@ -379,7 +436,7 @@ mod tests {
         assert!(active.eew_final && !active.warning && active.has_eew_warning());
         assert_eq!(active.warning_areas, ["熊本県熊本"]);
         assert_eq!(active.maximum.as_ref().unwrap().label(), "3");
-        assert_eq!(state.warning_seconds(now), Some(8));
+        assert_eq!(state.warning_seconds("fixture", now), Some(8));
 
         // A warning from the fallback may arrive out of order and list just the addition.
         let mut addition = report(clock, 6);
@@ -397,16 +454,26 @@ mod tests {
         other.eew_event_id = Some("other".into());
         assert!(state.receive(other, now));
         assert!(!state.active().unwrap().has_eew_warning());
+        assert_eq!(state.reports().count(), 2);
+        assert_eq!(state.alert().unwrap().warning_areas.len(), 2);
 
         forecast.issued = report(clock, 3).issued;
         assert!(state.receive(forecast.clone(), now));
-        assert_eq!(state.active().unwrap().warning_areas.len(), 2);
+        assert_eq!(state.alert().unwrap().warning_areas.len(), 2);
+        assert_eq!(
+            state.active().unwrap().eew_event_id.as_deref(),
+            Some("other")
+        );
         let mut cancellation = report(clock, 6);
         cancellation.eew_serial = None;
         cancellation.eew_cancelled = true;
         assert!(state.receive(cancellation, now));
-        assert!(!state.active().unwrap().has_eew_warning());
-        assert!(state.active().unwrap().warning_areas.is_empty());
+        let cancelled = state.reports().next().unwrap();
+        assert!(cancelled.eew_cancelled && cancelled.warning_areas.is_empty());
+        assert_eq!(
+            state.alert().unwrap().eew_event_id.as_deref(),
+            Some("other")
+        );
         forecast.issued = report(clock, 1).issued;
         assert!(!state.receive(forecast, now));
     }

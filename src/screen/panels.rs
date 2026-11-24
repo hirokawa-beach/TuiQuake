@@ -221,6 +221,54 @@ fn overview_facts(b: &Bulletin, width: usize) -> Vec<String> {
     ]
 }
 
+pub fn append_eew_events(
+    rows: &mut Vec<String>,
+    events: &[&Bulletin],
+    selected: usize,
+    display: Display,
+) {
+    let visible = events
+        .len()
+        .min(display.rows.saturating_sub(rows.len() + 8))
+        .min(6);
+    if visible == 0 {
+        return;
+    }
+    let start = selected
+        .saturating_sub(visible - 1)
+        .min(events.len() - visible);
+    let width = display.width();
+    for (index, report) in events.iter().enumerate().skip(start).take(visible) {
+        let (kind, ink) = if report.has_eew_warning() {
+            ("警報", WARNING_INK)
+        } else if report.eew_cancelled {
+            ("取消", MUTED)
+        } else {
+            ("予報", FORECAST_INK)
+        };
+        let cursor = if index == selected { "▸" } else { " " };
+        let name = if report.name.is_empty() {
+            "震源地不明"
+        } else {
+            &report.name
+        };
+        let mut text = format!("{cursor} {kind}  {name}");
+        if let Some(issued) = report.issued {
+            write!(text, "  {}", issued.format("%H:%M:%S")).unwrap();
+        }
+        if let Some(level) = &report.maximum {
+            write!(text, "  推定最大 {}", short_intensity_label(level)).unwrap();
+        }
+        if let Some(area) = report.warning_areas.first() {
+            write!(text, "  ·  対象 {area}").unwrap();
+            if report.warning_areas.len() > 1 {
+                write!(text, " ほか{}", report.warning_areas.len() - 1).unwrap();
+            }
+        }
+        rows.push(color(&fit(&text, width), ink, display.colors));
+    }
+}
+
 pub(super) fn eew_banner(b: &Bulletin, width: usize, ansi: bool, demo: bool) -> Vec<String> {
     let (kind, background) = if b.eew_cancelled {
         ("取消", None)

@@ -163,6 +163,92 @@ fn live_eew_alert_changes_refresh_the_quake_menu_and_match_by_id() {
 }
 
 #[test]
+fn concurrent_eew_keeps_the_warning_visible_and_the_reports_selectable() {
+    let now = Instant::now();
+    let utc = chrono::Utc::now();
+    let mut app = App::new(Client::new(), Duration::from_secs(2), false);
+    app.details.next = now + Duration::from_secs(600);
+    app.change_tab(Tab::Eew);
+    let send = |update| app.send.send(Reply::Live(update)).unwrap();
+    send(LiveUpdate::Clock(
+        Provider::Wolfx,
+        ServerClock { utc, received: now },
+    ));
+    for (id, name, age, warning) in [
+        ("one", "熊本県熊本地方", 20, true),
+        ("two", "宮城県沖", 5, false),
+    ] {
+        send(LiveUpdate::Eew(Box::new(Bulletin {
+            eew: true,
+            eew_event_id: Some(id.into()),
+            name: name.into(),
+            issued: Some((utc - chrono::TimeDelta::seconds(age)).fixed_offset()),
+            warning,
+            warning_areas: if warning {
+                vec!["熊本県熊本".into()]
+            } else {
+                vec![]
+            },
+            ..Bulletin::default()
+        })));
+    }
+    assert!(app.update(now));
+    assert_eq!(app.current().unwrap().0.name, "宮城県沖");
+    assert_eq!(app.menu_items()[Tab::Eew.index()].label, "EEW 警報");
+    assert_eq!(app.feed_status().eew.0, "EEW 警報");
+    assert_eq!(app.warning_seconds, None);
+
+    let events: Vec<_> = app.eew.reports().collect();
+    let mut rows = vec![];
+    screen::append_eew_events(
+        &mut rows,
+        &events,
+        app.eew_index(),
+        Display {
+            columns: 82,
+            rows: 24,
+            colors: true,
+            map: Map::Text,
+        },
+    );
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].contains("\x1b[38;2;255;97;98m") && rows[0].contains("対象 熊本県熊本"));
+    assert!(rows[1].contains("▸ 予報  宮城県沖"));
+
+    let mut renderer = Renderer::new().unwrap();
+    let focused = app.current().unwrap().0;
+    for columns in [48, 82] {
+        let display = Display {
+            columns,
+            rows: 24,
+            colors: false,
+            map: Map::Text,
+        };
+        let mut menu = screen::menu_lines(&app.menu_items(), display);
+        screen::append_feed_status(&mut menu, app.feed_status(), display);
+        screen::append_eew_events(&mut menu, &events, app.eew_index(), display);
+        let mut scene = Scene::single(&focused, false, "");
+        scene.menu = &menu;
+        let text = &renderer.render(scene, display).text;
+        let older = text.find("警報  熊本県熊本地方").unwrap();
+        let newer = text.find("▸ 予報  宮城県沖").unwrap();
+        let banner = text.find("緊急地震速報（予報）").unwrap();
+        assert!(older < newer && newer < banner);
+        assert!(text.lines().count() <= display.rows);
+    }
+
+    assert!(app.select(KeyCode::Up, 82, now));
+    assert_eq!(app.current().unwrap().0.name, "熊本県熊本地方");
+    assert_eq!(app.warning_seconds, Some(20));
+    assert!(app.select(KeyCode::Down, 82, now));
+    assert_eq!(app.current().unwrap().0.name, "宮城県沖");
+    assert!(app.select(KeyCode::Up, 82, now));
+    assert!(app.update(now + Duration::from_secs(100)));
+    assert_eq!(app.current().unwrap().0.name, "宮城県沖");
+    assert_eq!(app.menu_items()[Tab::Eew.index()].label, "EEW 予報");
+}
+
+#[test]
 fn sixel_waits_for_the_end_of_a_resize_burst() {
     let mut resize = ResizeRedraw::default();
     let sixel = Map::Image(Image::Sixel((10, 20)));

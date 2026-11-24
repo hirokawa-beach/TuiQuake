@@ -400,6 +400,7 @@ pub struct App {
     connected: Option<bool>,
     last_feed_update: Option<ServerClock>,
     warning_seconds: Option<u64>,
+    live_wavefront: Option<map::Wavefront>,
     connection_error: Option<String>,
     history_error: Option<String>,
     eew: eew::State,
@@ -437,6 +438,7 @@ impl App {
             connected: None,
             last_feed_update: None,
             warning_seconds: None,
+            live_wavefront: None,
             connection_error: None,
             history_error: None,
             eew: eew::State::default(),
@@ -877,8 +879,8 @@ impl App {
                         let minute = |sample: ServerClock| sample.utc.timestamp().div_euclid(60);
                         changed |= self.last_feed_update.map(minute) != Some(minute(clock));
                         self.last_feed_update = Some(clock);
+                        eew_changed |= self.eew.sync(clock, now);
                     }
-                    eew_changed |= self.eew.sync(clock, now);
                     if provider == Provider::Wolfx {
                         self.tsunami.state.sync_wolfx(clock, now);
                     }
@@ -974,6 +976,25 @@ impl App {
             self.demo.next = (*i + 1 < self.demo.frames.len()).then(|| now + self.demo.delay);
             changed = true;
         }
+        if self.tab == Tab::Demo && self.page == Page::Map {
+            changed |= self.demo.tick_wave(now, self.selection[Tab::Demo.index()]);
+        }
+        changed
+    }
+
+    fn refresh_live_wavefront(&mut self, now: Instant) -> bool {
+        let next = if self.tab == Tab::Eew
+            && self.page == Page::Map
+            && self.provider == Provider::Wolfx
+            && self.connected == Some(true)
+        {
+            self.selected_eew()
+                .and_then(|bulletin| self.eew.wavefront(bulletin, now))
+        } else {
+            None
+        };
+        let changed = self.live_wavefront != next;
+        self.live_wavefront = next;
         changed
     }
 
@@ -1265,6 +1286,15 @@ impl App {
         let live_eew = self.tab == Tab::Eew;
         let eew_source = live_eew.then(|| format!("気象庁発表 · {}", bulletin.provider.label()));
         let mut view = self.view;
+        view.wavefront = match self.tab {
+            Tab::Demo => self
+                .demo
+                .wave_seconds(&bulletin)
+                .zip(bulletin.depth)
+                .map(|(seconds, depth)| map::Wavefront::demo(depth, seconds)),
+            Tab::Eew => self.live_wavefront,
+            _ => None,
+        };
         view.eew_layer = if bulletin.eew {
             self.eew_layer
         } else {
@@ -1499,6 +1529,7 @@ pub fn run(
         if app.take_eew_bell() && settings.saved.eew_bell {
             console.ring()?;
         }
+        changed |= app.refresh_live_wavefront(Instant::now());
         let mut view = display(colors, map);
         changed |= resize.update(&mut view, Instant::now());
         if changed {

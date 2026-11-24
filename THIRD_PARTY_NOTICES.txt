@@ -1,6 +1,9 @@
 TuiQuake - third-party software notices (Windows, Linux and macOS)
 License information for the Rust crates used in the release builds.
 See README.md for map, API and logo sources.
+JMA2001 travel-time data is derived from the Japan Meteorological Agency travel-time table and converted by TuiQuake.
+Source: https://www.data.jma.go.jp/eqev/data/bulletin/catalog/appendix/trtime/trt_j.html
+Terms: https://www.jma.go.jp/jma/kishou/info/coment.html
 The Rust standard library copyright notices are included with the binary release.
 
 adler2 2.0.1 | 0BSD OR MIT OR Apache-2.0

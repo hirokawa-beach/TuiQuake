@@ -173,6 +173,12 @@ macOSは ~~作者が林檎信者ではないので~~ 実機確認ができてい
 - 地震履歴の初期値は10行です。5 / 10 / 20 / 30行、または端末の高さに合わせる「自動」を選べます。
 - EEWの端末ベルを有効にすると、初報を受信したときと警報に切り替わったときに端末へベルを送ります。設定行の `Enter` で試し鳴らしができます。音や通知の出方は端末の設定に従います。
 
+ライブEEWの予報円を描くための発生時刻・震央・深さと基準時刻は、すべてWolfxの配信から取得します。Wolfxのサーバー時刻から地震発生後の経過時間を求め、気象庁のJMA2001走時表を使って、現在時点のP波・S波の推定波面を円で描きます。 [気象庁のJMA2001走時表](https://www.data.jma.go.jp/eqev/data/bulletin/catalog/appendix/trtime/trt_j.html)
+
+取消報、PLUM法による仮定震源、深さや時刻を確認できない速報では円を表示しません。
+
+架空のEEWデモでは、P波とS波の広がりを円で表示します。気象庁の解説にあるおおよその速さ（P波は秒速7 km、S波は秒速4 km）を使ったデモ用の概算です。 [気象庁「緊急地震速報のしくみ」](https://www.jma.go.jp/jma/kishou/know/jishin/eew/shikumi/shikumi.html)
+
 ## 仕組みとデータ
 
 ![TuiQuakeの仕組み。地震・緊急地震速報・津波情報の受信からターミナル表示まで](docs/media/tuiquake-architecture.png)
@@ -286,6 +292,7 @@ TuiQuakeのオリジナルコードは [GNU General Public License v3.0](LICENSE
 
 | データ | 提供元 | 規約 |
 | --- | --- | --- |
+| P波・S波の走時表 | 気象庁のJMA2001走時表をTuiQuake用に変換（[走時表の出典](https://www.data.jma.go.jp/eqev/data/bulletin/catalog/appendix/trtime/trt_j.html)） | [気象庁の利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html) |
 | 地震・EEW・津波 | Wolfx Project（[WebSocket][wolfx-ws] / [Open API][wolfx-api]） | [利用規約][wolfx-terms] |
 | 予備配信 | [P2P地震情報 API][p2p-api] | [二次利用ガイドライン][p2p-terms] |
 | 震度観測点・細分区域 | 気象庁（[観測点一覧][jma-stations] / [細分区域のGISデータ][jma-gis]） | [利用規約][jma-terms] |

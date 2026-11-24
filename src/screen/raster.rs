@@ -128,6 +128,25 @@ pub(super) fn text_cell(
 const BRAILLE_DOTS: [u8; 8] = [1, 8, 2, 16, 4, 32, 64, 128];
 
 pub(super) fn braille_cell(pixels: [[Color; 4]; 8], colors: bool) -> (char, Rgb, Rgb) {
+    if let Some(wave) = pixels
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|&color| color >= map::P_WAVE)
+        .max()
+    {
+        let sea = map_ink(map::SEA);
+        if !colors {
+            return (map::plain(wave), sea, sea);
+        }
+        let dots = pixels
+            .iter()
+            .zip(BRAILLE_DOTS)
+            .filter_map(|(samples, dot)| samples.contains(&wave).then_some(dot))
+            .fold(0, |mask, dot| mask | dot);
+        let glyph = char::from_u32(0x2800 + u32::from(dots)).unwrap();
+        return (glyph, map_ink(wave), sea);
+    }
     let mut land = 0;
     let mut small_islands = 0;
     let mut surrounding = 0;

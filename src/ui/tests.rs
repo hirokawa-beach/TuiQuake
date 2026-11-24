@@ -155,6 +155,84 @@ fn help_scroll_and_close_preserve_the_underlying_view() {
 }
 
 #[test]
+fn live_wavefront_tracks_wolfx_time_and_disappears_on_disconnect_or_cancellation() {
+    let now = Instant::now();
+    let utc = chrono::Utc::now();
+    let mut app = App::new(Client::new(), Duration::from_secs(2), false);
+    app.change_tab(Tab::Eew);
+    let report = Bulletin {
+        provider: Provider::Wolfx,
+        eew: true,
+        eew_event_id: Some("wave-test".into()),
+        origin: Some((utc - chrono::TimeDelta::seconds(20)).fixed_offset()),
+        issued: Some((utc - chrono::TimeDelta::seconds(4)).fixed_offset()),
+        epicenter: data::Location::new(142.5, 38.2),
+        depth: Some(34),
+        ..Bulletin::default()
+    };
+    for update in [
+        LiveUpdate::Connection(Provider::Wolfx, None),
+        LiveUpdate::Eew(Box::new(report.clone())),
+    ] {
+        app.send.send(Reply::Live(update)).unwrap();
+    }
+    app.update(now);
+    assert!(!app.refresh_live_wavefront(now));
+    app.send
+        .send(Reply::Live(LiveUpdate::Clock(
+            Provider::Wolfx,
+            ServerClock { utc, received: now },
+        )))
+        .unwrap();
+    app.update(now);
+    assert!(app.refresh_live_wavefront(now));
+    assert!(app.live_wavefront.is_some());
+    app.send
+        .send(Reply::Live(LiveUpdate::Clock(
+            Provider::P2p,
+            ServerClock {
+                utc: utc + chrono::TimeDelta::seconds(60),
+                received: now,
+            },
+        )))
+        .unwrap();
+    app.update(now);
+    assert!(!app.refresh_live_wavefront(now + Duration::from_millis(250)));
+    assert!(app.refresh_live_wavefront(now + Duration::from_millis(500)));
+
+    let mut scene = Scene::single(&report, false, "");
+    scene.view.wavefront = app.live_wavefront;
+    let mut renderer = Renderer::new().unwrap();
+    let frame = renderer.render(
+        scene,
+        Display {
+            columns: 100,
+            rows: 34,
+            colors: true,
+            map: Map::Image(Image::Sixel((10, 20))),
+        },
+    );
+    assert!(frame.text.contains("P波面（推定）") && frame.text.contains("S波面（推定）"));
+    assert!(frame.graphic.starts_with("\x1bP"));
+
+    let mut cancelled = report.clone();
+    cancelled.eew_cancelled = true;
+    assert!(app.eew.wavefront(&cancelled, now).is_none());
+    let mut assumed = report;
+    assumed.plum_assumed_hypocenter = true;
+    assert!(app.eew.wavefront(&assumed, now).is_none());
+    app.send
+        .send(Reply::Live(LiveUpdate::Connection(
+            Provider::Wolfx,
+            Some("offline".into()),
+        )))
+        .unwrap();
+    app.update(now + Duration::from_secs(1));
+    assert!(app.refresh_live_wavefront(now + Duration::from_secs(1)));
+    assert!(app.live_wavefront.is_none());
+}
+
+#[test]
 fn live_eew_alert_changes_refresh_the_quake_menu_and_match_by_id() {
     let now = Instant::now();
     let mut app = App::new(Client::new(), Duration::from_secs(2), false);

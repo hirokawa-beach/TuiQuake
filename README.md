@@ -34,7 +34,9 @@
 
 _表示している地震は過去のものです。_
 
-2026年7月28日の令和8年熊本地震です。 [気象庁の震度データベース](https://www.data.jma.go.jp/eqdb/data/shindo/index.html#20260728162715) [令和8年熊本地震ポータル](https://www.jma.go.jp/jma/menu/20260728_kumamoto_jishin.html) [気象庁の区域一覧](https://www.jma.go.jp/jma/kishou/know/jishin/joho/shindo-name.html)
+2026年7月28日の令和8年熊本地震です。
+
+**参考資料**　[気象庁の震度データベース](https://www.data.jma.go.jp/eqdb/data/shindo/index.html#20260728162715) / [令和8年熊本地震ポータル](https://www.jma.go.jp/jma/menu/20260728_kumamoto_jishin.html) / [気象庁の区域一覧](https://www.jma.go.jp/jma/kishou/know/jishin/joho/shindo-name.html)
 
 <details>
 <summary>観測点ごとの震度を見る</summary>
@@ -55,53 +57,34 @@ _表示している地震は過去のものです。_
 ## 特長
 
 - **地震履歴を見る。** 履歴から選んだ地震の震源と各地の震度を確認できます。地域ごとの最大震度と観測点ごとの記録を切り替えられます。
-- **緊急地震速報（EEW）の更新を追う。** 受信したEEWの情報(予報/警報)を表示します。地図は警報の対象地域と地域ごとの推定震度を切り替えられます。
+- **緊急地震速報（EEW）の更新を追う。** 受信した予報と警報を表示します。地図は警報の対象地域と地域ごとの推定震度を切り替えられます。
 - **津波情報を確認する。** 大津波警報、津波警報、注意報、予報を沿岸線の色で示します。地域ごとの波高や第1波の見込みは、地図の横の一覧で確認できます。
 
 ## クイックスタート
 
-配布ファイルは GitHub Releases に掲載します。OSとCPUに合うファイルを選んでください。 [Releases](https://github.com/hirokawa-beach/TuiQuake/releases)
+配布先は GitHub Releases です。OSとCPUに合うファイルを選んでください。 [ダウンロード](https://github.com/hirokawa-beach/TuiQuake/releases) · [ソースからビルド](#ソースからビルド)
 
-ソースからビルドする場合は、ビルド手順を参照してください。 [ビルド手順](#ソースからビルド)
+### Windows（MSI）
 
-| 環境                           | ファイル                                           |
-| ------------------------------ | -------------------------------------------------- |
-| Windows（x86-64） | `tuiquake-windows-x86_64.msi`（インストーラー） / `tuiquake-windows-x86_64.exe`（単体版） |
-| Linux（x86-64 / ARM64） | `tuiquake-linux-x86_64.deb` / `tuiquake-linux-aarch64.deb`（Ubuntu・Debian向け）。拡張子のない実行ファイルも選べます。 |
-| macOS（Intel / Apple Silicon） | Homebrew / `tuiquake-macos-x86_64.pkg` / `tuiquake-macos-aarch64.pkg`。インストール不要の実行ファイルも選べます。 |
-
-**Windows**
-
-`tuiquake-windows-x86_64.msi` を開いてインストールしてください。新しく開いたターミナルで `tuiquake` と入力すると起動できます。アンインストールはWindowsの「インストールされているアプリ」から行えます。
-
-インストールせずに使う場合は `tuiquake-windows-x86_64.exe` をダウンロードし、保存先を開いたPowerShellで `.\tuiquake-windows-x86_64.exe` を実行します。
+`tuiquake-windows-x86_64.msi` を開いてインストールします。新しいターミナルで `tuiquake` と入力してください。削除する場合は、Windowsの「インストールされているアプリ」からアンインストールできます。
 
 > [!NOTE]
-> Windows向けの .msi と .exe は未署名です。ダウンロード後の起動時に Microsoft Defender SmartScreen の警告が出る場合があります。 [SmartScreenの説明](https://learn.microsoft.com/en-us/windows/security/threat-protection/microsoft-defender-smartscreen/microsoft-defender-smartscreen-overview)
+> Windows向けの `.msi` と `.exe` は未署名です。起動時にMicrosoft Defender SmartScreenの警告が出る場合があります。 [SmartScreenの説明](https://learn.microsoft.com/en-us/windows/security/threat-protection/microsoft-defender-smartscreen/microsoft-defender-smartscreen-overview)
 
-**Linux（Ubuntu・Debianなど）**
+### Linux（Ubuntu・Debian向けの .deb）
 
-ダウンロードした `.deb` の保存先で、CPUに合うコマンドを実行します。
-
-**x86-64（amd64）**
+x86-64は `tuiquake-linux-x86_64.deb`、ARM64は `tuiquake-linux-aarch64.deb` をダウンロードします。保存先のフォルダで次を実行してください。コマンドがCPUに合うファイル名を選びます。
 
 ```bash
-sudo apt install ./tuiquake-linux-x86_64.deb
-tuiquake
-```
-
-**ARM64（aarch64）**
-
-```bash
-sudo apt install ./tuiquake-linux-aarch64.deb
+sudo apt install ./tuiquake-linux-$(uname -m).deb
 tuiquake
 ```
 
 アンインストールは `sudo apt remove tuiquake` で行えます。
 
-**macOS（Homebrew）**
+### macOS（Homebrew）
 
-Homebrewを使っている場合は、TuiQuakeのリポジトリをtapに追加してインストールできます。Homebrew 6以降ではインストール前に、TuiQuakeのFormulaを信頼する設定も行います。
+Intel・Apple Siliconともに同じ手順です。Homebrew 5以前では `brew trust` の行を省いてください。初回はソースからビルドします。
 
 ```bash
 brew tap hirokawa-beach/tuiquake https://github.com/hirokawa-beach/TuiQuake.git
@@ -110,122 +93,52 @@ brew install hirokawa-beach/tuiquake/tuiquake
 tuiquake
 ```
 
-Homebrew 5以前は `brew trust` の行を省けます。初回はソースからビルドするため、時間がかかることがあります。
+<details>
+<summary>macOS用の .pkg を使う</summary>
 
-**macOS（インストーラー）**
+Intel Macは `tuiquake-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-macos-aarch64.pkg` を開きます。インストール後はターミナルで `tuiquake` と入力してください。
 
-- **Intel Mac** は `tuiquake-macos-x86_64.pkg`
-- **Apple Silicon Mac** は `tuiquake-macos-aarch64.pkg`
+`.pkg` は未署名・未公証です。macOSに開くのを止められた場合はHomebrewを使えます。
 
-ダウンロードした `.pkg` を開いてインストールします。新しく開いたターミナルで `tuiquake` と入力すると起動できます。
-
-このインストーラーは未署名・未公証です。macOSに開くのを止められた場合は、上のHomebrew手順を利用できます。
+</details>
 
 <details>
-<summary>Linux・macOSでインストールせずに起動する</summary>
+<summary>インストールせずに実行ファイルを使う</summary>
 
-ダウンロードした実行ファイルの保存先で、該当するコマンドを実行します。
+ダウンロードしたファイルの保存先で起動します。Linux・macOSでは実行権限を付けてから起動します。
 
-**Linux x86-64**
-
-```bash
-chmod +x ./tuiquake-linux-x86_64
-./tuiquake-linux-x86_64
-```
-
-**Linux ARM64**
-
-```bash
-chmod +x ./tuiquake-linux-aarch64
-./tuiquake-linux-aarch64
-```
-
-**macOS Intel**
-
-```bash
-chmod +x ./tuiquake-macos-x86_64
-./tuiquake-macos-x86_64
-```
-
-**macOS Apple Silicon**
-
-```bash
-chmod +x ./tuiquake-macos-aarch64
-./tuiquake-macos-aarch64
-```
+- **Windows x86-64（PowerShell）** — `.\tuiquake-windows-x86_64.exe`
+- **Linux x86-64・ARM64** — `chmod +x ./tuiquake-linux-$(uname -m) && ./tuiquake-linux-$(uname -m)`
+- **macOS Intel** — `chmod +x ./tuiquake-macos-x86_64 && ./tuiquake-macos-x86_64`
+- **macOS Apple Silicon** — `chmod +x ./tuiquake-macos-aarch64 && ./tuiquake-macos-aarch64`
 
 </details>
 
 ### ダウンロードしたファイルを検証する
 
-配布ファイルと同じリリースから SHA256SUMS.txt もダウンロードします。同じフォルダで、OSに合う手順を実行してください。
+配布ファイルと同じリリースの `SHA256SUMS.txt` を、同じフォルダに保存します。
 
-**Windows（PowerShell）**
+- **Windows（PowerShell）** — MSIなら `Get-FileHash -Algorithm SHA256 .\tuiquake-windows-x86_64.msi`、EXEなら `Get-FileHash -Algorithm SHA256 .\tuiquake-windows-x86_64.exe` を実行します。表示された値を `SHA256SUMS.txt` の同じファイル名の行と照合します。ハッシュの英字は大文字・小文字を区別しません。
+- **Linux** — `sha256sum --ignore-missing -c SHA256SUMS.txt`
+- **macOS** — `shasum -a 256 -c --ignore-missing SHA256SUMS.txt`
 
-```powershell
-Get-FileHash -Algorithm SHA256 .\tuiquake-windows-x86_64.msi
-Get-FileHash -Algorithm SHA256 .\tuiquake-windows-x86_64.exe
-```
-
-ダウンロードしたファイルに対応する行だけ実行し、表示されたハッシュを SHA256SUMS.txt の同じファイル名の行と照合します。英字の大文字と小文字はどちらでも同じ値です。
-
-**Linux**
-
-```bash
-sha256sum --ignore-missing -c SHA256SUMS.txt
-```
-
-**macOS**
-
-```bash
-shasum -a 256 -c --ignore-missing SHA256SUMS.txt
-```
-
-Linux・macOSでは手元にあるファイルを検証し、一致したファイルに OK と表示されます。
+Linux・macOSでは、一致したファイルの横に `OK` と表示されます。
 
 ## 必要な環境
 
-画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルエミュレーター(以後ターミナルと呼びます)が必要です。
+画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。ライブ配信の受信にはインターネット接続も必要です。
 
-**作者が動作を確認したターミナル**は、Windowsの **Windows Terminal** と、Raspberry Pi OSの **foot・Rio Terminal** です。**macOSは作者による実機確認ができていません。**
+作者が動作を確認した端末は次の3件です。
 
-<details>
-<summary>ターミナルの画像描画方式（参考・20件）</summary>
+| OS | ターミナル |
+| --- | --- |
+| Windows | [Windows Terminal](https://learn.microsoft.com/ja-jp/windows/terminal/) |
+| Raspberry Pi OS | [foot](https://codeberg.org/dnkl/foot) |
+| Raspberry Pi OS | [Rio Terminal](https://rioterm.com/) |
 
-Terminal Troveの「Image Support」をもとにした、各ターミナルの画像描画方式の一覧です。表の「—」は、参照した資料で対応を確認できなかった方式です。 [Terminal Troveの比較表](https://terminaltrove.com/compare/terminals/)
+macOSは作者による実機確認ができていません。各端末のSixel・Kitty対応は別ページにまとめています。 [ターミナルの画像描画方式](docs/terminals.md)
 
-凡例: 🪟 Windows ／ 🐧 Linux ／ 🍎 macOS
-
-| ターミナル                                                                                           | OS                                                                                                                     | Sixel                                     | Kitty画像描画                                                             |
-| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
-| [Bobcat](https://github.com/ismail-yilmaz/Bobcat)                                                    | 🪟 🐧 🍎                                                                                                               | 対応                                      | 対応                                                                      |
-| [cmux](https://cmux.com/)                                                                            | 🍎                                                                                                                     | —                                         | 対応                                                                      |
-| [Contour Terminal](https://contour-terminal.org/)                                                    | 🪟 🐧 🍎                                                                                                               | 対応                                      | 対応                                                                      |
-| [foot](https://codeberg.org/dnkl/foot)                                                               | 🐧                                                                                                                     | 対応                                      | —                                                                         |
-| [Ghostty](https://ghostty.org/)                                                                      | 🐧 🍎                                                                                                                  | —                                         | 対応                                                                      |
-| [iTerm2](https://iterm2.com/)                                                                        | 🍎                                                                                                                     | [対応](https://iterm2.com/downloads.html) | 対応                                                                      |
-| [kitty](https://sw.kovidgoyal.net/kitty/)                                                            | 🐧 🍎                                                                                                                  | —                                         | 対応                                                                      |
-| [Konsole](https://apps.kde.org/konsole/)                                                             | 🪟（[開発版](https://apps.kde.org/konsole/)） 🐧 🍎（ARM・開発版）                                                     | 対応                                      | 一部対応                                                                  |
-| [Mintty](https://mintty.github.io/)                                                                  | 🪟                                                                                                                     | 対応                                      | —                                                                         |
-| [mlterm](https://mlterm.sourceforge.net/)                                                            | 🪟 🐧 🍎（[旧macOSで動作確認](https://github.com/arakiken/mlterm)）                                                    | 対応                                      | —                                                                         |
-| [Ratty](https://github.com/orhun/ratty)                                                              | 🪟 🐧 🍎                                                                                                               | —                                         | 対応                                                                      |
-| [Rex](https://www.superlogical.com/)                                                                 | 🪟（一部のベータ参加者） 🍎（ベータ）                                                                                  | —                                         | [対応（比較表の記載）](https://terminaltrove.com/terminals/rex-terminal/) |
-| [Rio Terminal](https://rioterm.com/)                                                                 | 🪟 🐧 🍎                                                                                                               | 対応                                      | 対応                                                                      |
-| [Tabby](https://tabby.sh/)                                                                           | 🪟 🐧 🍎                                                                                                               | 対応（設定による）                        | —                                                                         |
-| [Terminology](https://www.enlightenment.org/about-terminology)                                       | 🐧                                                                                                                     | —                                         | —                                                                         |
-| [Warp Terminal](https://www.warp.dev/)                                                               | 🪟 🐧 🍎                                                                                                               | —                                         | 一部対応                                                                  |
-| [WezTerm](https://wezterm.org/)                                                                      | 🪟 🐧 🍎                                                                                                               | 試験的                                    | 対応                                                                      |
-| [Windows Terminal](https://learn.microsoft.com/ja-jp/windows/terminal/)                              | 🪟                                                                                                                     | 1.22以降                                  | —                                                                         |
-| [xterm](https://invisible-island.net/xterm/)                                                         | 🪟（[Cygwin/X](https://cygwin.com/packages/summary/xterm.html)） 🐧 🍎（[XQuartz](https://www.xquartz.org/FAQs.html)） | 対応（VT340などの設定による）             | —                                                                         |
-| [Extraterm](https://extraterm.org/)                                                                  | 🪟 🐧 🍎                                                                                                               | —                                         | —                                                                         |
-
-Terminologyは `tycat`、Extratermは `show` で画像を表示できます。実際の描画方式は、使用中の端末でTuiQuakeを起動して確認してください。
-
-</details>
-
-起動時の選択画面に表示された描画方式を選んでください。画像描画方式が検出されない場合は、Unicode Braille（表示調整中）で起動できます。
-
-日本語を表示できる等幅フォントを使ってください。Windows Terminalでは Cascadia Mono を使えます。ライブ配信の受信にはインターネット接続が必要です。 [Windows Terminal の外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
+起動画面に表示された描画方式を選んでください。画像描画が検出されない場合は、Unicode Braille（表示調整中）で起動できます。
 
 ## 主なキー
 
@@ -253,25 +166,45 @@ Terminologyは `tycat`、Extratermは `show` で画像を表示できます。�
 
 ## 仕組みとデータ
 
-右上のステータスで接続先、最後の応答時刻（JST）、EEW・津波の状況が分かります。
+画面右上に接続先、最後の応答時刻（JST）、EEWと津波の状況を表示します。
 
 ### 配信元
 
-地震一覧、EEW、津波情報は Wolfx の WebSocket で受信し、地震詳細は Wolfx の HTTP API から取得します。ライブ配信が途切れると P2P地震情報へ切り替え、Wolfx が復旧すると元の配信へ戻ります。P2P から受け取る EEW は警報です。
+| 用途 | 配信元と接続方式 |
+| --- | --- |
+| 地震一覧・EEW・津波情報 | WolfxのWebSocket |
+| 地震の詳細 | WolfxのHTTP API |
+| ライブ配信が途切れたとき | P2P地震情報。EEWは警報を受信します。 |
+
+Wolfxが復旧すると、元の配信へ戻ります。
 
 ### 緊急地震速報（EEW）
 
-配信元のサーバー時刻を基準に、発表から120秒未満の報を表示します。警報が出た地震では、その後に予報が更新されても赤い帯と警報対象地域が残ります。警報の続報で対象地域を追加し、取消報を受けると警報表示を消します。 [気象庁の発表基準](https://www.jma.go.jp/jma/kishou/know/jishin/eew/shikumi/shousai.html)
+- 配信元のサーバー時刻を基準に、発表から120秒未満の報を表示します。
+- 一度警報が出ると、その後の予報でも赤い帯と警報対象地域が残ります。
+- 警報の続報で対象地域を追加します。取消報を受けると警報表示を消します。
+- 地図は `V` で警報対象と推定震度を切り替えられます。推定震度は気象庁の配信値です。
+- 震度に幅があるときは上限を、下限だけが示されたときはその下限を地図の色に使います。受信した範囲は一覧で確認できます。
+- 速報概要の推定最大震度も、幅があるときは上限をバッジに使います。
+- 地図を「震源周辺」にすると、対象が収まる範囲で最大約10.5倍まで自動で拡大します。
 
-地図は `V` で「警報対象」と「推定震度」を切り替えられます。推定震度は気象庁の配信値を使います。範囲が示されたときはその上限、下限だけが示されたときはその下限の色で描画します。受信した範囲は一覧で確認できます。「震源周辺」にすると、表示対象が収まる範囲で最大約10.5倍まで自動で拡大します。 [地震動の予報業務許可に関する気象庁のFAQ](https://www.jma.go.jp/jma/kishou/minkan/q_a_s.html)
+予報と警報の発表条件は、気象庁の解説を参照してください。 [緊急地震速報の発表基準](https://www.jma.go.jp/jma/kishou/know/jishin/eew/shikumi/shousai.html)
 
-「速報概要」の推定最大震度も、幅がある場合は上限をバッジに使います。
+地震動の予報業務許可の制度は、気象庁のFAQで確認できます。 [地震動の予報業務許可に関するFAQ](https://www.jma.go.jp/jma/kishou/minkan/q_a_s.html)
 
 ### 津波情報
 
-地図は全国66の津波予報区のうち、確認期限内の発表がある沿岸を色分けします。大津波警報は紫、津波警報は赤、津波注意報は黄、津波予報は水色です。一覧でも同じ色を発表区分の背景と地域名に使います。波高と第1波の見込みもここで確認できます。 [気象庁の津波予報区](https://www.jma.go.jp/jma/kishou/know/jishin/joho/tsunami-yohoku.html)
+- 全国66の津波予報区のうち、確認期限内の発表がある沿岸を色分けします。 [気象庁の津波予報区](https://www.jma.go.jp/jma/kishou/know/jishin/joho/tsunami-yohoku.html)
+- 一覧では発表区分と地域名も同じ色で示し、波高と第1波の見込みを表示します。
+- `Z` で全国と対象沿岸を切り替えます。
+- 確認期限切れの情報やP2Pの参考情報では、沿岸線は通常の色で表示します。
 
-`Z` で全国と対象沿岸を切り替えます。確認期限切れの情報とP2Pの参考情報では、沿岸線に現況の色を付けません。
+| 発表区分 | 色 |
+| --- | --- |
+| 大津波警報 | 紫 |
+| 津波警報 | 赤 |
+| 津波注意報 | 黄 |
+| 津波予報 | 水色 |
 
 ## ソースからビルド
 
@@ -288,7 +221,7 @@ cargo build --release --locked
 Windows の PowerShell では `.\target\release\tuiquake.exe`、Linux / macOS では `./target/release/tuiquake` で起動します。
 
 <details>
-<summary>コマンドで直接表示する(開発者向け)</summary>
+<summary>コマンドで直接表示する（開発者向け）</summary>
 
 | コマンド                   | 表示内容                                                      |
 | -------------------------- | ------------------------------------------------------------- |
@@ -313,7 +246,9 @@ Windows の PowerShell では `.\target\release\tuiquake.exe`、Linux / macOS �
 
 ### 地図に隙間が出る、文字の桁がずれる
 
-等幅フォントを選び、日本語の代替フォントと端末の文字間隔を確認してください。日本語の等幅フォントには Noto Sans Mono CJK JP も使えます。 [Noto Sans CJK のダウンロード案内](https://github.com/notofonts/noto-cjk/tree/main/Sans#language-specific-otfs)
+Windows Terminalでは「設定 → プロファイル → 既定値 → 外観」で「フォント フェイス」に `Cascadia Mono` を指定できます。 [Windows Terminalの外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
+
+日本語と半角文字の桁がずれるときは、日本語を含む等幅フォントの `Noto Sans Mono CJK JP` を試してください。 [Noto Sans CJK のダウンロード案内](https://github.com/notofonts/noto-cjk/tree/main/Sans#language-specific-otfs)
 
 ### 画像地図が表示されない
 
@@ -332,29 +267,49 @@ It is an unofficial viewer. For safety decisions, consult official information f
 
 ## ライセンスとデータの出典
 
-TuiQuake のオリジナルコードは [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）です。配布バイナリの依存ライブラリのライセンスは [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に記載しております。
+TuiQuakeのオリジナルコードは [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）です。配布バイナリの依存ライブラリのライセンスは [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に記載しています。
 
-- **地震・EEW・津波** — データ提供 Wolfx Project。気象庁発表の情報を [Wolfx WebSocket](https://wolfx.jp/docs/websocket/) と [Wolfx Open API](https://wolfx.jp/docs/open-api/) 経由で取得します。[Wolfx Project の利用規約](https://wolfx.jp/legal/terms/)
-- **予備配信(フォールバック)** — P2P地震情報。 [P2P地震情報 API](https://www.p2pquake.net/develop/json_api_v2/) [二次利用ガイドライン](https://www.p2pquake.net/secondary_use/)
-- **震度観測点と区域** — 気象庁の [震度観測点一覧](https://www.data.jma.go.jp/eqev/data/bulletin/shindo.html) と [予報区等GISデータ「地震情報／細分区域」](https://www.data.jma.go.jp/developer/gis.html) を加工しました。 [気象庁ホームページの利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)
-- **津波地図** — 気象庁の防災情報サイトの津波予報区データから、区域コードと沿岸線を抽出して描画しています。 [気象庁の津波予報区](https://www.jma.go.jp/jma/kishou/know/jishin/joho/tsunami-yohoku.html) [地図データ（GeoJSON）](https://www.jma.go.jp/bosai/common/const/geojson/tsunami.json) [気象庁ホームページの利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)
-- **湖沼** — 国土交通省の [国土数値情報（湖沼データ W09、平成17年版）](https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-W09-v2_2.html) から面積10 km²以上の湖沼を抽出し、輪郭を簡略化しました。整備時点と現在の湖岸線には差がある場合があります。 [国土数値情報の利用規約](https://nlftp.mlit.go.jp/ksj/other/agreement_02.html)
-- **周辺陸地** — [Natural Earth 1:50m Land](https://www.naturalearthdata.com/downloads/50m-physical-vectors/50m-land/) のうち、東経110〜159度・北緯18〜55度の範囲を切り出しました。 [Natural Earth の利用条件（パブリックドメイン）](https://www.naturalearthdata.com/about/terms-of-use/)
+| データ | 提供元 | 規約 |
+| --- | --- | --- |
+| 地震・EEW・津波 | Wolfx Project（[WebSocket][wolfx-ws] / [Open API][wolfx-api]） | [利用規約][wolfx-terms] |
+| 予備配信 | [P2P地震情報 API][p2p-api] | [二次利用ガイドライン][p2p-terms] |
+| 震度観測点・細分区域 | 気象庁（[観測点一覧][jma-stations] / [細分区域のGISデータ][jma-gis]） | [利用規約][jma-terms] |
+| 津波予報区 | 気象庁（[予報区の案内][jma-tsunami] / [沿岸線GeoJSON][jma-tsunami-json]） | [利用規約][jma-terms] |
+| 湖沼 | 国土交通省（[国土数値情報 W09・平成17年版][mlit-lakes]） | [利用規約][mlit-terms] |
+| 周辺陸地 | [Natural Earth 1:50m Land][natural-land] | [利用条件（パブリックドメイン）][natural-terms] |
+
+[wolfx-ws]: https://wolfx.jp/docs/websocket/
+[wolfx-api]: https://wolfx.jp/docs/open-api/
+[wolfx-terms]: https://wolfx.jp/legal/terms/
+[p2p-api]: https://www.p2pquake.net/develop/json_api_v2/
+[p2p-terms]: https://www.p2pquake.net/secondary_use/
+[jma-stations]: https://www.data.jma.go.jp/eqev/data/bulletin/shindo.html
+[jma-gis]: https://www.data.jma.go.jp/developer/gis.html
+[jma-terms]: https://www.jma.go.jp/jma/kishou/info/coment.html
+[jma-tsunami]: https://www.jma.go.jp/jma/kishou/know/jishin/joho/tsunami-yohoku.html
+[jma-tsunami-json]: https://www.jma.go.jp/bosai/common/const/geojson/tsunami.json
+[mlit-lakes]: https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-W09-v2_2.html
+[mlit-terms]: https://nlftp.mlit.go.jp/ksj/other/agreement_02.html
+[natural-land]: https://www.naturalearthdata.com/downloads/50m-physical-vectors/50m-land/
+[natural-terms]: https://www.naturalearthdata.com/about/terms-of-use/
+
 <details>
-<summary>気象庁の地図データの加工内容</summary>
+<summary>地図データの加工内容</summary>
 
 - `stations.json` には震度観測点一覧から抽出した名前と座標を収録しています。位置情報のない観測点は文字詳細に表示します。
 - `regions.json` には地震情報の細分区域の名称・コード・ポリゴンを収録しています。共有境界をまとめて簡略化し、細い隙間を補正しています。ごく小さな島の輪郭は省略しています。
 - `tsunami_coasts.json` には津波予報区の区域コードと沿岸線を収録しています。
+- 湖沼は面積10 km²以上を抽出し、輪郭を簡略化しています。整備時点と現在の湖岸線には差がある場合があります。
+- 周辺陸地は、東経110〜159度・北緯18〜55度を切り出しています。
 
-元の地図と利用上の注意は公開元のページに記載されています。 [気象庁の予報区等GISデータ一覧](https://www.data.jma.go.jp/developer/gis.html)
+元の地図と利用上の注意は公開元のページに記載されています。 [気象庁の予報区等GISデータ一覧][jma-gis]
 
 </details>
 
 <details>
 <summary>地図データを再生成する（開発者向け）</summary>
 
-通常のビルドではリポジトリに含まれる地図データを使います。再生成するには、気象庁の一覧で「地震情報／細分区域」を選び、湖沼データと津波予報区の `tsunami.json` も取得します。 [気象庁の予報区等GISデータ一覧](https://www.data.jma.go.jp/developer/gis.html) [国土交通省の湖沼データ](https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-W09-v2_2.html) [気象庁の津波予報区GeoJSON](https://www.jma.go.jp/bosai/common/const/geojson/tsunami.json)
+通常のビルドではリポジトリに含まれる地図データを使います。再生成するには、気象庁の一覧で「地震情報／細分区域」を選び、湖沼データと津波予報区の `tsunami.json` も取得します。 [気象庁の予報区等GISデータ一覧][jma-gis] [国土交通省の湖沼データ][mlit-lakes] [気象庁の津波予報区GeoJSON][jma-tsunami-json]
 
 Python 3.11以上とNode.js 20.11以上で、リポジトリのルートから次のコマンドを実行します。
 

@@ -55,7 +55,7 @@ impl Raster {
             let mut from = point(0);
             for bearing in 1..=360 {
                 let to = point(bearing);
-                self.stroke_line(from, to, 1, color);
+                self.stroke_line(from, to, 0, color);
                 from = to;
             }
         }

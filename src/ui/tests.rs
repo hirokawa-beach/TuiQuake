@@ -403,3 +403,20 @@ fn inline_graphic_uses_relative_position_and_leaves_the_cursor_after_the_frame()
     let output = std::str::from_utf8(&bytes).unwrap();
     assert!(output.contains("legend\r\n\x1b7\x1b[3A\r\x1b[?80l\x1bP7;1q~\x1b\\\x1b8"));
 }
+
+#[test]
+fn quit_confirmation_uses_y_and_n_and_blocks_other_keys() {
+    let mut dialog = QuitConfirmation::default();
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    assert_eq!(dialog.handle(key(KeyCode::Char('q'))), QuitAction::Redraw);
+    assert_eq!(dialog.handle(key(KeyCode::Char('q'))), QuitAction::Block);
+    assert_eq!(dialog.handle(key(KeyCode::Char('4'))), QuitAction::Block);
+    assert_eq!(dialog.handle(key(KeyCode::Char('N'))), QuitAction::Redraw);
+    assert_eq!(dialog.handle(key(KeyCode::Enter)), QuitAction::Pass);
+    assert_eq!(dialog.handle(key(KeyCode::Char('Q'))), QuitAction::Redraw);
+    assert_eq!(dialog.handle(key(KeyCode::Enter)), QuitAction::Block);
+    assert_eq!(dialog.handle(key(KeyCode::Esc)), QuitAction::Redraw);
+    assert_eq!(dialog.handle(key(KeyCode::Char('q'))), QuitAction::Redraw);
+    assert_eq!(dialog.handle(key(KeyCode::Char('y'))), QuitAction::Exit);
+}

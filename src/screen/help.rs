@@ -139,14 +139,14 @@ impl HelpTopic {
     }
 }
 
-pub struct HelpOverlay {
+pub struct Overlay {
     pub row: usize,
     pub column: usize,
     pub lines: Vec<String>,
     pub colors: bool,
 }
 
-pub fn help(topic: HelpTopic, display: Display, scroll: &mut usize) -> HelpOverlay {
+pub fn help(topic: HelpTopic, display: Display, scroll: &mut usize) -> Overlay {
     let width = display.width().saturating_sub(4).clamp(8, 54);
     let inner = width - 4;
     let max_height = display.rows.saturating_sub(4).max(4).min(display.rows);
@@ -174,7 +174,7 @@ pub fn help(topic: HelpTopic, display: Display, scroll: &mut usize) -> HelpOverl
     *scroll = (*scroll).min(content.len().saturating_sub(capacity));
     let available = (content.len() - *scroll).min(capacity);
     let overflow = content.len() > capacity;
-    let mut lines = if max_height >= 3 {
+    let lines = if max_height >= 3 {
         let mut visible: Vec<_> = content.into_iter().skip(*scroll).take(available).collect();
         let footer = if overflow && inner >= "↑↓ スクロール  H / Esc 閉じる".width() {
             "↑↓ スクロール  H / Esc 閉じる"
@@ -190,6 +190,36 @@ pub fn help(topic: HelpTopic, display: Display, scroll: &mut usize) -> HelpOverl
     } else {
         vec![pad("H / Esc", width)]
     };
+    centered_overlay(lines, width, display)
+}
+
+pub fn quit_confirmation(display: Display) -> Overlay {
+    let width = display.width().min(42);
+    let inner = width - 4;
+    let height = display.rows;
+    let actions = ["Y 終了", "N 戻る"];
+    let lines = if height >= 5 && inner >= actions.join("  /  ").width() {
+        Border::new(width, false).text(
+            vec![
+                fit("TuiQuakeを終了しますか？", inner),
+                String::new(),
+                actions.join("  /  "),
+            ],
+            "終了の確認",
+            5,
+        )
+    } else if height >= 2 {
+        actions
+            .iter()
+            .map(|action| pad(&fit(action, width), width))
+            .collect()
+    } else {
+        vec![pad(&fit("Y / N", width), width)]
+    };
+    centered_overlay(lines, width, display)
+}
+
+fn centered_overlay(mut lines: Vec<String>, width: usize, display: Display) -> Overlay {
     if display.colors {
         let mut style = String::new();
         map::rgb(&mut style, (20, 32, 40), true);
@@ -198,7 +228,7 @@ pub fn help(topic: HelpTopic, display: Display, scroll: &mut usize) -> HelpOverl
             *line = format!("{style}{line}{RESET}");
         }
     }
-    HelpOverlay {
+    Overlay {
         row: display.rows.saturating_sub(lines.len()) / 2 + 1,
         column: (display.width() - width) / 2 + 1,
         lines,

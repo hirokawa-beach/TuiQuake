@@ -210,5 +210,5 @@ jobs:
           assets=(tuiquake[-_]*)
           sha256sum "${assets[@]}" > SHA256SUMS.txt
           gh release create "$GITHUB_REF_NAME" \
-            --verify-tag --generate-notes \
+            --draft --verify-tag --generate-notes \
             "${assets[@]}" SHA256SUMS.txt LICENSE.txt THIRD_PARTY_NOTICES.txt RUST-STDLIB-NOTICES.html

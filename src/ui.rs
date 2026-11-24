@@ -25,8 +25,8 @@ use crate::{
     map::{self, EewLayer, Layer, View},
     release::{self, Browser, Release},
     screen::{
-        self, AboutInfo, Display, FeedStatus, Frame, HelpOverlay, HelpTopic, History,
-        MIN_SPLIT_WIDTH, MenuNotice, QuakeNotices, Renderer, Scene,
+        self, AboutInfo, Display, FeedStatus, Frame, HelpTopic, History, MIN_SPLIT_WIDTH,
+        MenuNotice, Overlay, QuakeNotices, Renderer, Scene,
     },
     settings::{DEFAULT_HISTORY_ROWS, Settings, StationGrouping},
 };
@@ -75,6 +75,7 @@ pub fn display(colors: bool, map: Map) -> Display {
 
 pub struct Console {
     output: String,
+    quit_confirmation: QuitConfirmation,
     sixel_visible: bool,
     kitty_visible: bool,
     #[cfg(windows)]
@@ -92,6 +93,7 @@ impl Console {
         terminal::enable_raw_mode()?;
         let console = Self {
             output: String::with_capacity(32768),
+            quit_confirmation: QuitConfirmation::default(),
             sixel_visible: false,
             kitty_visible: false,
             #[cfg(windows)]
@@ -114,7 +116,7 @@ impl Console {
         self.paint_layers(frame, None)
     }
 
-    fn paint_layers(&mut self, frame: &Frame, overlay: Option<&HelpOverlay>) -> io::Result<()> {
+    fn paint_layers(&mut self, frame: &Frame, overlay: Option<&Overlay>) -> io::Result<()> {
         self.output.clear();
         self.output.push_str("\x1b[?2026h");
         let id = std::process::id();
@@ -181,12 +183,25 @@ fn choose_map(
     let mut selected = 0;
     loop {
         let view = display(colors, Map::Braille);
-        let frame = screen::map_picker(&options, selected, view);
-        console.paint(&frame)?;
+        let overlay = console
+            .quit_confirmation
+            .open
+            .then(|| screen::quit_confirmation(view));
+        let mut background = view;
+        if overlay.is_some() {
+            background.colors = false;
+        }
+        let frame = screen::map_picker(&options, selected, background);
+        console.paint_layers(&frame, overlay.as_ref())?;
 
         match event::read()? {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if quit(key) || key.code == KeyCode::Esc {
+                match console.quit_confirmation.handle(key) {
+                    QuitAction::Exit => return Ok(None),
+                    QuitAction::Redraw | QuitAction::Block => continue,
+                    QuitAction::Pass => {}
+                }
+                if key.code == KeyCode::Esc {
                     return Ok(None);
                 }
                 match key.code {
@@ -273,10 +288,49 @@ impl Drop for Console {
     }
 }
 
-fn quit(key: KeyEvent) -> bool {
+fn ctrl_c(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c' | 'C')) && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn quit_key(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Char('q' | 'Q'))
-        || matches!(key.code, KeyCode::Char('c' | 'C'))
-            && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QuitAction {
+    Pass,
+    Block,
+    Redraw,
+    Exit,
+}
+
+#[derive(Default)]
+struct QuitConfirmation {
+    open: bool,
+}
+
+impl QuitConfirmation {
+    fn handle(&mut self, key: KeyEvent) -> QuitAction {
+        if ctrl_c(key) {
+            return QuitAction::Exit;
+        }
+        if self.open {
+            return match key.code {
+                KeyCode::Char('y' | 'Y') if key.kind == KeyEventKind::Press => QuitAction::Exit,
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                    self.open = false;
+                    QuitAction::Redraw
+                }
+                _ => QuitAction::Block,
+            };
+        }
+        if quit_key(key) {
+            self.open = true;
+            QuitAction::Redraw
+        } else {
+            QuitAction::Pass
+        }
+    }
 }
 
 pub fn wait_or_quit(delay: Duration) -> Result<bool> {
@@ -288,7 +342,7 @@ pub fn wait_or_quit(delay: Duration) -> Result<bool> {
         }
         if let Event::Key(key) = event::read()?
             && key.kind != KeyEventKind::Release
-            && quit(key)
+            && (quit_key(key) || ctrl_c(key))
         {
             return Ok(true);
         }
@@ -1121,16 +1175,22 @@ impl App {
         if self.page == Page::List && display.width() >= MIN_SPLIT_WIDTH {
             self.page = Page::Map;
         }
-        let overlay = self.help_scroll.map(|mut scroll| {
-            let layer = screen::help(self.help_topic(display.width()), display, &mut scroll);
-            self.help_scroll = Some(scroll);
+        let overlay = if console.quit_confirmation.open {
+            Some(screen::quit_confirmation(display))
+        } else {
+            self.help_scroll.map(|mut scroll| {
+                let layer = screen::help(self.help_topic(display.width()), display, &mut scroll);
+                self.help_scroll = Some(scroll);
+                layer
+            })
+        };
+        if overlay.is_some() {
             display.colors = false;
             // Image protocols cannot reliably place terminal text over an image.
             if matches!(display.map, Map::Image(_)) {
                 display.map = Map::Braille;
             }
-            layer
-        });
+        }
         let mut draw = |frame: &Frame| console.paint_layers(frame, overlay.as_ref());
         let items = self.menu_items();
         let mut menu = screen::menu_lines(&items, display);
@@ -1500,28 +1560,32 @@ pub fn run(
         if event::poll(Duration::from_millis(35))? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if quit(key) {
-                        return Ok(());
+                    match console.quit_confirmation.handle(key) {
+                        QuitAction::Exit => return Ok(()),
+                        QuitAction::Redraw => changed = true,
+                        QuitAction::Block => {}
+                        QuitAction::Pass => {
+                            let code = if key.code == KeyCode::Tab
+                                && key.modifiers.contains(KeyModifiers::SHIFT)
+                            {
+                                KeyCode::BackTab
+                            } else {
+                                key.code
+                            };
+                            let in_settings = app.help_scroll.is_none() && app.tab == Tab::Settings;
+                            changed |= if in_settings && settings.trial_key(code) {
+                                console.ring()?;
+                                settings.notice = Some(("端末ベルを送信しました", false));
+                                true
+                            } else if in_settings
+                                && settings.handle(code, &mut app, &mut map, &capabilities)
+                            {
+                                true
+                            } else {
+                                app.select(code, display(colors, map).width(), Instant::now())
+                            };
+                        }
                     }
-                    let code = if key.code == KeyCode::Tab
-                        && key.modifiers.contains(KeyModifiers::SHIFT)
-                    {
-                        KeyCode::BackTab
-                    } else {
-                        key.code
-                    };
-                    let in_settings = app.help_scroll.is_none() && app.tab == Tab::Settings;
-                    changed |= if in_settings && settings.trial_key(code) {
-                        console.ring()?;
-                        settings.notice = Some(("端末ベルを送信しました", false));
-                        true
-                    } else if in_settings
-                        && settings.handle(code, &mut app, &mut map, &capabilities)
-                    {
-                        true
-                    } else {
-                        app.select(code, display(colors, map).width(), Instant::now())
-                    };
                 }
                 _ => {}
             }

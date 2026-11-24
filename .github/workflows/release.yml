@@ -118,6 +118,20 @@ jobs:
           trap 'sudo apt-get remove -y tuiquake' EXIT
           test "$(command -v tuiquake)" = /usr/bin/tuiquake
           test "$(tuiquake --version)" = "$(target/release/tuiquake --version)"
+      - name: Test Homebrew installation
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          set -euo pipefail
+          brew tap hirokawa-beach/tuiquake "$GITHUB_WORKSPACE"
+          if brew command trust >/dev/null 2>&1; then
+            brew trust --formula hirokawa-beach/tuiquake/tuiquake
+          fi
+          brew install hirokawa-beach/tuiquake/tuiquake
+          brew test hirokawa-beach/tuiquake/tuiquake
+          test "$(tuiquake --version)" = "$(target/release/tuiquake --version)"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}

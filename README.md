@@ -67,7 +67,7 @@ _表示している地震は過去のものです。_
 | ------------------------------ | -------------------------------------------------- |
 | Windows（x86-64） | `tuiquake-windows-x86_64.msi`（インストーラー） / `tuiquake-windows-x86_64.exe`（単体版） |
 | Linux（x86-64 / ARM64） | `tuiquake-linux-x86_64.deb` / `tuiquake-linux-aarch64.deb`（Ubuntu・Debian向け）。拡張子のない実行ファイルも選べます。 |
-| macOS（Intel / Apple Silicon） | `tuiquake-macos-x86_64` / `tuiquake-macos-aarch64` |
+| macOS（Intel / Apple Silicon） | Homebrew、または `tuiquake-macos-x86_64` / `tuiquake-macos-aarch64` |
 
 **Windows**
 
@@ -85,6 +85,19 @@ tuiquake
 ```
 
 ARM64ではファイル名を `tuiquake-linux-aarch64.deb` に置き換えてください。アンインストールは `sudo apt remove tuiquake` で行えます。
+
+**macOS（Homebrew）**
+
+Homebrewを使っている場合は、TuiQuakeのリポジトリをtapに追加してインストールできます。Homebrew 6以降ではインストール前に、TuiQuakeのFormulaを信頼する設定も行います。
+
+```bash
+brew tap hirokawa-beach/tuiquake https://github.com/hirokawa-beach/TuiQuake.git
+brew trust --formula hirokawa-beach/tuiquake/tuiquake
+brew install hirokawa-beach/tuiquake/tuiquake
+tuiquake
+```
+
+Homebrew 5以前は `brew trust` の行を省けます。初回はソースからビルドするため、時間がかかることがあります。
 
 **Linux・macOSで実行ファイルを直接使う**
 

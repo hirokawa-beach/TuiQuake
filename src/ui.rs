@@ -1349,6 +1349,7 @@ impl App {
             Some(TsunamiStatus::Alert) => ("津波 警報等", Some(MenuNotice::Warning)),
             Some(TsunamiStatus::Forecast) => ("津波 予報", Some(MenuNotice::Forecast)),
             Some(TsunamiStatus::Clear) => ("津波 なし", None),
+            _ if self.tsunami_report_expired() => ("津波 なし", None),
             _ => ("津波 未確認", None),
         };
         FeedStatus {

@@ -15,6 +15,11 @@ mod socket;
 mod wolfx;
 mod wolfx_details;
 
+#[cfg(test)]
+pub(crate) fn wolfx_tsunami_fixture(payload: &Value) -> Tsunami {
+    wolfx::read_tsunami(payload).unwrap()
+}
+
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 #[derive(Clone, Copy, Debug)]

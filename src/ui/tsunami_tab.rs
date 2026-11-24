@@ -25,13 +25,28 @@ impl Default for TsunamiTab {
 
 impl App {
     pub(super) fn confirmed_tsunami(&self) -> Option<&data::Tsunami> {
-        self.tsunami.state.verified(self.provider).filter(|report| {
-            report.status != TsunamiStatus::Clear
-                || (self.connected == Some(true)
-                    && self.provider == Provider::Wolfx
-                    && self.tsunami.received
-                    && self.tsunami.error.is_none())
-        })
+        self.tsunami
+            .state
+            .verified(self.provider)
+            .filter(|report| report.status != TsunamiStatus::Clear || self.has_live_wolfx_tsunami())
+    }
+
+    fn has_live_wolfx_tsunami(&self) -> bool {
+        self.connected == Some(true)
+            && self.provider == Provider::Wolfx
+            && self.tsunami.received
+            && self.tsunami.error.is_none()
+    }
+
+    pub(super) fn tsunami_report_expired(&self) -> bool {
+        self.has_live_wolfx_tsunami()
+            && self.tsunami.state.validity == Validity::Current
+            && self
+                .tsunami
+                .state
+                .wolfx
+                .as_ref()
+                .is_some_and(|report| report.status == TsunamiStatus::Expired)
     }
 
     pub(super) fn tsunami_map_areas(&self) -> &[data::TsunamiArea] {
@@ -62,6 +77,7 @@ impl App {
                 "津波予報 発表中"
             }
             Some(_) => "現在、津波の発表はありません",
+            None if self.tsunami_report_expired() => "津波の発表なし",
             None if self.tsunami.state.wolfx.is_none() && self.connected.is_none() => {
                 "津波情報を取得中…"
             }
@@ -88,7 +104,7 @@ impl App {
             }
             if let Some(until) = report.valid_until {
                 notes.push(format!(
-                    "配信確認期限 {} JST · Wolfx",
+                    "Wolfx情報の確認期限 {} JST",
                     until.format("%m/%d %H:%M:%S")
                 ));
             }

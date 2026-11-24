@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn expired_tsunami_reports_show_no_current_announcement_while_wolfx_is_current() {
+    let now = Instant::now();
+    let mut app = App::new(Client::new(), Duration::from_secs(2), false);
+    let utc = chrono::Utc::now();
+    app.connected = Some(true);
+    app.provider = Provider::Wolfx;
+    app.tsunami.received = true;
+    app.tsunami
+        .state
+        .sync_wolfx(data::ServerClock { utc, received: now }, now);
+    app.tsunami.state.receive(
+        data::wolfx_tsunami_fixture(&serde_json::json!({
+            "status": "expired",
+            "trusted": true,
+            "validUntil": (utc + chrono::Duration::minutes(2)).to_rfc3339(),
+            "report": {"time": (utc - chrono::Duration::days(1)).to_rfc3339()},
+        })),
+        now,
+    );
+    app.tsunami.state.update(now);
+
+    assert_eq!(app.feed_status().tsunami.0, "津波 なし");
+    assert_eq!(app.tsunami_display().0, "津波の発表なし");
+    assert!(app.confirmed_tsunami().is_none());
+    assert!(app.tsunami_map_areas().is_empty());
+
+    app.connected = Some(false);
+    assert_eq!(app.feed_status().tsunami.0, "津波 未確認");
+    app.connected = Some(true);
+    app.provider = Provider::P2p;
+    assert_eq!(app.feed_status().tsunami.0, "津波 未確認");
+    app.provider = Provider::Wolfx;
+    app.tsunami.state.update(now + Duration::from_secs(120));
+    assert_eq!(app.feed_status().tsunami.0, "津波 未確認");
+}
+
+#[test]
 fn update_notification_only_marks_the_about_tab() {
     let now = Instant::now();
     let mut app = App::new(Client::new(), Duration::from_secs(2), false);

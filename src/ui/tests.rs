@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn update_notification_only_marks_the_about_tab() {
+    let now = Instant::now();
+    let mut app = App::new(Client::new(), Duration::from_secs(2), false);
+    app.details.next = now + Duration::from_secs(60);
+    app.change_tab(Tab::Eew);
+    assert_eq!(app.menu_items()[Tab::About.index()].label, "アプリ情報");
+    let release = Release::newer("v1.2.3".into(), "0.1.0").unwrap();
+    app.send.send(Reply::UpdateAvailable(release)).ok().unwrap();
+
+    assert!(app.update(now));
+    let items = app.menu_items();
+    let about = &items[Tab::About.index()];
+    assert_eq!(about.label, "アプリ情報 ↑更新");
+    assert!(about.notice.is_none());
+    assert!(items[Tab::Eew.index()].active);
+    assert!(!app.take_eew_bell());
+}
+
+#[test]
 fn demo_can_change_intensity_and_toggle_forecast_without_losing_warning_areas() {
     let now = Instant::now();
     let mut app = App::new(Client::new(), Duration::from_secs(2), false);

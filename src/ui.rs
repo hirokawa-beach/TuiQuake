@@ -23,6 +23,7 @@ use crate::{
     eew,
     graphics::{self, Capabilities, Image, KITTY_COMMAND, Map, MapMode},
     map::{self, EewLayer, Layer, View},
+    release::{self, Browser, Release},
     screen::{
         self, AboutInfo, Display, FeedStatus, Frame, HelpOverlay, HelpTopic, History,
         MIN_SPLIT_WIDTH, MenuNotice, QuakeNotices, Renderer, Scene,
@@ -351,6 +352,8 @@ enum Page {
 enum Reply {
     Details(Result<Arc<[Report]>>),
     Live(LiveUpdate),
+    UpdateAvailable(Release),
+    ReleasePageOpened(bool),
 }
 
 struct DetailsState {
@@ -401,6 +404,7 @@ pub struct App {
     eew: eew::State,
     tsunami: TsunamiTab,
     demo: DemoState,
+    release: Option<Release>,
 }
 
 impl App {
@@ -435,6 +439,7 @@ impl App {
             eew: eew::State::default(),
             tsunami: TsunamiTab::default(),
             demo: DemoState::new(delay),
+            release: None,
         }
     }
 
@@ -450,6 +455,37 @@ impl App {
             });
         });
         app
+    }
+
+    fn check_for_update(&self) {
+        let send = self.send.clone();
+        let _ = thread::Builder::new().spawn(move || {
+            if let Some(release) = Release::check() {
+                let _ = send.send(Reply::UpdateAvailable(release));
+            }
+        });
+    }
+
+    fn open_release_page(&mut self) -> bool {
+        let Some(release) = &mut self.release else {
+            return false;
+        };
+        if release.browser == Browser::Opening {
+            return false;
+        }
+        let url = release.url();
+        let send = self.send.clone();
+        release.browser = if thread::Builder::new()
+            .spawn(move || {
+                let _ = send.send(Reply::ReleasePageOpened(release::open_in_browser(&url)));
+            })
+            .is_ok()
+        {
+            Browser::Opening
+        } else {
+            Browser::Failed
+        };
+        true
     }
 
     pub fn newest(&self) -> Option<&Bulletin> {
@@ -545,6 +581,7 @@ impl App {
             KeyCode::Esc if self.tab == Tab::Demo && self.page == Page::Map => {
                 self.change_tab(Tab::Settings);
             }
+            KeyCode::Enter if self.tab == Tab::About => return self.open_release_page(),
             KeyCode::Esc if self.tab == Tab::About => self.change_tab(Tab::Quake),
             KeyCode::Up if self.tab == Tab::About => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::Down if self.tab == Tab::About => self.scroll = self.scroll.saturating_add(1),
@@ -731,6 +768,20 @@ impl App {
         let mut eew_changed = false;
         while let Ok(message) = self.incoming.try_recv() {
             match message {
+                Reply::UpdateAvailable(release) => {
+                    self.release = Some(release);
+                    changed = true;
+                }
+                Reply::ReleasePageOpened(opened) => {
+                    if let Some(release) = &mut self.release {
+                        release.browser = if opened {
+                            Browser::Ready
+                        } else {
+                            Browser::Failed
+                        };
+                        changed |= self.tab == Tab::About;
+                    }
+                }
                 Reply::Details(result) => {
                     self.details.pending = false;
                     let result = result.map_err(|error| error.to_string());
@@ -938,8 +989,37 @@ impl App {
                 eew: self.demo.frames[self.selection[Tab::Demo.index()]].eew,
             },
             Tab::Settings => HelpTopic::Settings,
-            Tab::About => HelpTopic::About,
+            Tab::About => HelpTopic::About {
+                update_available: self.release.is_some(),
+            },
         }
+    }
+
+    fn menu_items(&self) -> [screen::MenuItem<'static>; Tab::MENU.len()] {
+        Tab::MENU.map(|tab| {
+            let bulletin = match tab {
+                Tab::Eew => self.eew.active(),
+                _ => None,
+            };
+            let (label, notice) = match (tab, bulletin.filter(|bulletin| bulletin.eew)) {
+                (Tab::Eew, Some(bulletin)) if bulletin.eew_cancelled => ("EEW 取消", None),
+                (Tab::Eew, Some(bulletin)) if bulletin.warning => {
+                    ("EEW 警報", Some(MenuNotice::Warning))
+                }
+                (Tab::Eew, Some(bulletin)) if bulletin.has_eew_warning() => {
+                    ("EEW 警報あり", Some(MenuNotice::Warning))
+                }
+                (Tab::Eew, Some(_)) => ("EEW 予報", Some(MenuNotice::Forecast)),
+                (Tab::About, _) if self.release.is_some() => ("アプリ情報 ↑更新", None),
+                _ => (tab.label(), None),
+            };
+            screen::MenuItem {
+                key: (b'1' + tab.index() as u8) as char,
+                label,
+                active: tab == self.tab.menu_tab(),
+                notice,
+            }
+        })
     }
 
     fn paint(
@@ -965,29 +1045,7 @@ impl App {
             layer
         });
         let mut draw = |frame: &Frame| console.paint_layers(frame, overlay.as_ref());
-        let items = Tab::MENU.map(|tab| {
-            let bulletin = match tab {
-                Tab::Eew => self.eew.active(),
-                _ => None,
-            };
-            let (label, notice) = match (tab, bulletin.filter(|bulletin| bulletin.eew)) {
-                (Tab::Eew, Some(bulletin)) if bulletin.eew_cancelled => ("EEW 取消", None),
-                (Tab::Eew, Some(bulletin)) if bulletin.warning => {
-                    ("EEW 警報", Some(MenuNotice::Warning))
-                }
-                (Tab::Eew, Some(bulletin)) if bulletin.has_eew_warning() => {
-                    ("EEW 警報あり", Some(MenuNotice::Warning))
-                }
-                (Tab::Eew, Some(_)) => ("EEW 予報", Some(MenuNotice::Forecast)),
-                _ => (tab.label(), None),
-            };
-            screen::MenuItem {
-                key: (b'1' + tab.index() as u8) as char,
-                label,
-                active: tab == self.tab.menu_tab(),
-                notice,
-            }
-        });
+        let items = self.menu_items();
         let mut menu = screen::menu_lines(&items, display);
         let feed_status = self.feed_status();
         let connection = feed_status.connection;
@@ -1011,6 +1069,7 @@ impl App {
                     rendering: active_map,
                     capabilities,
                     connection,
+                    release: self.release.as_ref(),
                 },
             ))?);
         }
@@ -1322,6 +1381,7 @@ pub fn run(
         mode.supported(&capabilities).unwrap_or(Map::Braille)
     };
     let mut app = App::start(client, delay, national || settings.saved.national);
+    app.check_for_update();
     app.layer = settings.saved.layer;
     app.station_grouping = settings.saved.station_grouping;
     app.history_rows = settings.saved.history_rows;

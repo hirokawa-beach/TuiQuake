@@ -1,6 +1,9 @@
 use std::env;
 
-use crate::graphics::Capabilities;
+use crate::{
+    graphics::Capabilities,
+    release::{Browser, Release},
+};
 
 use super::*;
 
@@ -13,6 +16,7 @@ pub struct AboutInfo<'a> {
     pub rendering: Map,
     pub capabilities: &'a Capabilities,
     pub connection: &'a str,
+    pub release: Option<&'a Release>,
 }
 
 fn terminal() -> String {
@@ -88,21 +92,6 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize, info: AboutI
     let viewport = capacity - pinned.len();
     let mut content = Vec::new();
 
-    let features = [
-        ("地震", "地震の履歴と、地域別・観測点別の震度を表示します。"),
-        (
-            "EEW",
-            "警報対象と推定震度の地図を切り替えられます。仮定震源には「PLUM法による仮定震源」と表示します。",
-        ),
-        (
-            "津波",
-            "警報・注意報・予報を沿岸線と地域一覧で色分けします。",
-        ),
-    ];
-    content.push(color(&fit("表示できる情報", inner), INK, display.colors));
-    content.extend(about_rows(&features, inner, display.colors));
-    content.push(String::new());
-
     let detected = |available| if available { "対応" } else { "未検出" };
     let image = format!(
         "Sixel {}  Kitty {}",
@@ -120,8 +109,15 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize, info: AboutI
             || "不明".into(),
             |time| time.format("%Y-%m-%d %H:%M UTC").to_string(),
         );
-    let diagnostics = [
-        ("バージョン", env!("CARGO_PKG_VERSION")),
+    let availability = info
+        .release
+        .map(|release| format!("{} が利用できます", release.tag));
+    let mut diagnostics = vec![("バージョン", env!("CARGO_PKG_VERSION"))];
+    if let Some(availability) = &availability {
+        diagnostics.push(("更新", availability));
+    }
+    let terminal = terminal();
+    diagnostics.extend([
         ("コミット", env!("TUIQUAKE_BUILD_COMMIT")),
         ("ビルド日時", &built_at),
         ("制作者", env!("CARGO_PKG_AUTHORS")),
@@ -129,13 +125,38 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize, info: AboutI
         ("ライセンス", env!("CARGO_PKG_LICENSE")),
         ("不具合報告", issues),
         ("OS", &os),
-        ("端末", &terminal()),
+        ("端末", &terminal),
         ("画像描画の検出", &image),
         ("使用中の描画方式", info.rendering.label()),
         ("接続状態", info.connection),
-    ];
+    ]);
     content.push(color(&fit("アプリと動作環境", inner), INK, display.colors));
+    if let Some(release) = info
+        .release
+        .filter(|release| release.browser == Browser::Failed)
+    {
+        content.extend(
+            ["ブラウザーを開けませんでした。", &release.url()]
+                .into_iter()
+                .flat_map(|line| wrap(line, inner))
+                .map(|line| color(&line, MUTED, display.colors)),
+        );
+    }
     content.extend(about_rows(&diagnostics, inner, display.colors));
+    content.push(String::new());
+    let features = [
+        ("地震", "地震の履歴と、地域別・観測点別の震度を表示します。"),
+        (
+            "EEW",
+            "警報対象と推定震度の地図を切り替えられます。仮定震源には「PLUM法による仮定震源」と表示します。",
+        ),
+        (
+            "津波",
+            "警報・注意報・予報を沿岸線と地域一覧で色分けします。",
+        ),
+    ];
+    content.push(color(&fit("表示できる情報", inner), INK, display.colors));
+    content.extend(about_rows(&features, inner, display.colors));
     content.push(String::new());
     content.push(color(
         &fit("データとクレジット", inner),
@@ -175,7 +196,12 @@ pub fn about(menu: &[String], display: Display, scroll: &mut usize, info: AboutI
     let height = pinned.len() + 2;
     let mut rows = menu.to_vec();
     rows.extend(Border::new(width, display.colors).text(pinned, &title, height));
-    rows.push(footer(&["↑↓ スクロール", "Esc 戻る"], display));
+    let actions: &[&str] = if info.release.is_some() {
+        &["Enter リリースページ", "↑↓ スクロール", "Esc 戻る"]
+    } else {
+        &["↑↓ スクロール", "Esc 戻る"]
+    };
+    rows.push(footer(actions, display));
     Frame {
         text: rows.join("\n"),
         ..Frame::default()

@@ -260,6 +260,63 @@ fn startup_picker_fits_and_keeps_the_selected_renderer_visible() {
 }
 
 #[test]
+fn about_shows_an_available_update_next_to_the_current_version() {
+    use crate::release::{Browser, Release};
+
+    let display = Display {
+        columns: 82,
+        rows: 24,
+        colors: false,
+        map: Map::Braille,
+    };
+    let menu = [
+        "TuiQuake".into(),
+        "Wolfx".into(),
+        "─".repeat(display.width()),
+    ];
+    let capabilities = graphics::Capabilities::default();
+    let mut release = Release::newer("v1.2.3".into(), "0.1.0").unwrap();
+    let render = |release| {
+        about(
+            &menu,
+            display,
+            &mut 0,
+            AboutInfo {
+                rendering: Map::Braille,
+                capabilities: &capabilities,
+                connection: "Wolfx",
+                release,
+            },
+        )
+    };
+    let up_to_date = render(None);
+    assert!(!up_to_date.text.contains("Enter リリースページ"));
+    let frame = render(Some(&release));
+    let lines: Vec<_> = frame.text.lines().collect();
+    let current = lines
+        .iter()
+        .position(|line| line.contains("バージョン"))
+        .unwrap();
+    assert!(lines[current + 1].contains("v1.2.3 が利用できます"));
+    assert!(frame.text.contains("Enter リリースページ"));
+
+    release.browser = Browser::Failed;
+    let frame = about(
+        &menu,
+        display,
+        &mut 0,
+        AboutInfo {
+            rendering: Map::Braille,
+            capabilities: &capabilities,
+            connection: "Wolfx",
+            release: Some(&release),
+        },
+    );
+    assert!(frame.text.contains("ブラウザーを開けませんでした"));
+    assert!(frame.text.contains(&release.url()));
+}
+
+#[test]
 fn about_keeps_the_disclaimer_visible_while_scrolling() {
     let menu = ["TuiQuake".into()];
     let display = Display {
@@ -276,6 +333,7 @@ fn about_keeps_the_disclaimer_visible_while_scrolling() {
         rendering: Map::Braille,
         capabilities: &capabilities,
         connection: "● P2P（予備）",
+        release: None,
     };
     let mut scroll = 0;
     let first = about(&menu, display, &mut scroll, info());

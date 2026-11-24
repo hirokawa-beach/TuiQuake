@@ -19,7 +19,9 @@ pub enum HelpTopic {
         eew: bool,
     },
     Settings,
-    About,
+    About {
+        update_available: bool,
+    },
 }
 
 type Binding = (&'static str, &'static str);
@@ -115,14 +117,17 @@ impl HelpTopic {
                     ("Esc", "地震タブへ戻る"),
                 ],
             ),
-            Self::About => (
-                "アプリ情報の操作",
-                vec![
+            Self::About { update_available } => {
+                let mut bindings = vec![
                     ("↑ / ↓", "スクロール"),
                     ("Home / End", "先頭・末尾へ移動"),
                     ("Esc", "地震タブへ戻る"),
-                ],
-            ),
+                ];
+                if update_available {
+                    bindings.insert(0, ("Enter", "リリースページを開く"));
+                }
+                ("アプリ情報の操作", bindings)
+            }
         }
     }
 }

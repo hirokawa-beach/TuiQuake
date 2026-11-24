@@ -2,6 +2,7 @@ mod data;
 mod eew;
 mod graphics;
 mod map;
+mod release;
 mod screen;
 mod settings;
 mod tsunami;

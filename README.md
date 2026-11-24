@@ -2,7 +2,7 @@
 
 <img src="docs/media/tuiquake-logo.svg" alt="TuiQuake" width="480">
 
-日本の地震情報、緊急地震速報、津波情報をターミナルで確認できます。
+日本の地震情報、緊急地震速報、津波情報をターミナルエミュレーター(以後ターミナルと呼ぶ)上で確認できます。
 
 [![CI](https://github.com/hirokawa-beach/TuiQuake/actions/workflows/ci.yml/badge.svg)](https://github.com/hirokawa-beach/TuiQuake/actions/workflows/ci.yml)
 [![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-3b769b)](LICENSE)
@@ -10,14 +10,14 @@
 
 > **非公式の閲覧用アプリです。** 配信や通信による遅延・欠落があります。防災時は気象庁・自治体の公式情報を確認してください。
 
-> [!NOTE]
-> Unicode Brailleと文字地図は表示調整中です。地図を見るときは、SixelまたはKittyの画像描画に対応したターミナルでの利用を推奨します。 [対応ターミナル](#必要な環境)
+> [!IMPORTANT]
+> Unicode Brailleと文字地図は表示調整中です。地図を見るときは、SixelまたはKittyの画像描画に対応したターミナルでの利用を推奨します。 [画像対応ターミナル](#必要な環境)
 
 ## 目次
 
 - [画面例](#画面例)
 - [特長](#特長)
-- [クイックスタート](#クイックスタート)
+- [導入方法](#導入方法)
   - [ダウンロードしたファイルを検証する](#ダウンロードしたファイルを検証する)
 - [必要な環境](#必要な環境)
 - [主なキー](#主なキー)
@@ -60,7 +60,7 @@ _表示している地震は過去のものです。_
 - **緊急地震速報（EEW）の更新を追う。** 受信した予報と警報を表示します。地図は警報の対象地域と地域ごとの推定震度を切り替えられます。
 - **津波情報を確認する。** 大津波警報、津波警報、注意報、予報を沿岸線の色で示します。地域ごとの波高や第1波の見込みは、地図の横の一覧で確認できます。
 
-## クイックスタート
+## 導入方法
 
 配布先は GitHub Releases です。OSとCPUに合うファイルを選んでください。以下は v0.1.0 のファイル名です。 [ダウンロード](https://github.com/hirokawa-beach/TuiQuake/releases) · [ソースからビルド](#ソースからビルド)
 
@@ -69,7 +69,7 @@ _表示している地震は過去のものです。_
 `tuiquake-0.1.0-windows-x86_64.msi` を開いてインストールします。新しいターミナルで `tuiquake` と入力してください。削除する場合は、Windowsの「インストールされているアプリ」からアンインストールできます。
 
 > [!NOTE]
-> Windows向けの `.msi` と `.exe` は未署名です。起動時にMicrosoft Defender SmartScreenの警告が出る場合があります。 [SmartScreenの説明](https://learn.microsoft.com/en-us/windows/security/threat-protection/microsoft-defender-smartscreen/microsoft-defender-smartscreen-overview)
+> Windows向けの `.msi` と `.exe` は未署名です。起動時にMicrosoft Defender SmartScreenの警告が出る場合があります。
 
 ### Linux（Ubuntu・Debian向けの .deb）
 
@@ -98,7 +98,7 @@ tuiquake
 
 Intel Macは `tuiquake-0.1.0-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-0.1.0-macos-aarch64.pkg` を開きます。インストール後はターミナルで `tuiquake` と入力してください。
 
-`.pkg` は未署名・未公証です。macOSに開くのを止められた場合はHomebrewを使えます。
+`.pkg` は未署名・未公証です。
 
 </details>
 
@@ -125,10 +125,12 @@ Intel Macは `tuiquake-0.1.0-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-
 Linux・macOSでは、一致したファイルの横に `OK` と表示されます。
 
 ## 必要な環境
+~~TUIが表示できる(ANSI制御に対応した対話型の)ターミナルで使用できます。~~  
+Braille及び文字での地図表示は現在調整中です。画像描画に対応したターミナルを推奨します。
 
-画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。ライブ配信の受信にはインターネット接続も必要です。
+画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。もちろん、インターネット接続も必要です。
 
-作者が動作を確認した端末は次の3件です。
+作者が(画像描画含め)動作を確認した端末は次の3件です。
 
 | OS | ターミナル |
 | --- | --- |
@@ -136,9 +138,9 @@ Linux・macOSでは、一致したファイルの横に `OK` と表示されま�
 | Raspberry Pi OS | [foot](https://codeberg.org/dnkl/foot) |
 | Raspberry Pi OS | [Rio Terminal](https://rioterm.com/) |
 
-macOSは作者による実機確認ができていません。各端末のSixel・Kitty対応は別ページにまとめています。 [ターミナルの画像描画方式](docs/terminals.md)
+macOSは ~~作者が林檎信者ではないので~~ 実機確認ができていません。各端末のSixel・Kitty対応は[画像描画対応ターミナル一覧](docs/terminals.md)にまとめています。
 
-起動画面に表示された描画方式を選んでください。画像描画が検出されない場合は、Unicode Braille（表示調整中）で起動できます。
+起動画面に表示された描画方式を選んでください。
 
 ## 主なキー
 
@@ -252,7 +254,7 @@ Windows Terminalでは「設定 → プロファイル → 既定値 → 外観�
 
 ### 画像地図が表示されない
 
-端末が Sixel または Kitty に対応しているか確認してください。`--map text` で文字地図を選べます。文字地図と Unicode Braille は非推奨です。この2方式では観測点の震度は一覧に表示されます。
+端末が Sixel または Kitty に対応しているか確認してください。設定画面の地図表示方法、もしくは`--map text` で文字地図を選べます。文字地図と Unicode Braille は現状非推奨(調整中)です。この2方式では観測点の震度は一覧に表示されます。
 
 ### 不具合を報告する
 

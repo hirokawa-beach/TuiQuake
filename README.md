@@ -2,7 +2,7 @@
 
 <img src="docs/media/tuiquake-logo.svg" alt="TuiQuake" width="480">
 
-日本の地震情報、緊急地震速報（EEW）、津波情報をターミナルで確認できます。
+日本の地震情報、緊急地震速報、津波情報をターミナルで確認できます。
 
 [![CI](https://github.com/hirokawa-beach/TuiQuake/actions/workflows/ci.yml/badge.svg)](https://github.com/hirokawa-beach/TuiQuake/actions/workflows/ci.yml)
 [![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-3b769b)](LICENSE)
@@ -10,13 +10,30 @@
 
 > **非公式の閲覧用アプリです。** 配信や通信による遅延・欠落があります。防災時は気象庁・自治体の公式情報を確認してください。
 
-[起動方法](#クイックスタート) · [操作キー](#主なキー) · [ソースからビルド](#ソースからビルド)
+> [!NOTE]
+> Unicode Brailleと文字地図は表示調整中です。地図を見るときは、SixelまたはKittyの画像描画に対応したターミナルでの利用を推奨します。 [対応ターミナル](#必要な環境)
+
+## 目次
+
+- [画面例](#画面例)
+- [特長](#特長)
+- [クイックスタート](#クイックスタート)
+- [必要な環境](#必要な環境)
+- [主なキー](#主なキー)
+- [設定](#設定)
+- [仕組みとデータ](#仕組みとデータ)
+- [ソースからビルド](#ソースからビルド)
+- [トラブルシュート](#トラブルシュート)
+- [English](#english)
+- [ライセンスとデータの出典](#ライセンスとデータの出典)
+
+## 画面例
 
 <a href="docs/media/earthquakes-regions.png"><img src="docs/media/earthquakes-regions.png" alt="令和8年熊本地震の地域別表示。各区域の最大震度を色と数字で表示。" width="760"></a>
 
-*表示している地震は過去のものです。*
+_表示している地震は過去のものです。_
 
-2026年7月28日の令和8年熊本地震です。観測値を気象庁の区域ごとに集計し、77地域の最大震度を表示しています。熊本県熊本地方と熊本県天草・芦北地方では、その日の終わりまでに震度1以上の地震が194件ありました。右下の履歴に載せたのは、本震とその直後の9件です。 [気象庁の震度データベース](https://www.data.jma.go.jp/eqdb/data/shindo/index.html#20260728162715) [令和8年熊本地震ポータル](https://www.jma.go.jp/jma/menu/20260728_kumamoto_jishin.html) [気象庁の区域一覧](https://www.jma.go.jp/jma/kishou/know/jishin/joho/shindo-name.html)
+2026年7月28日の令和8年熊本地震です。 [気象庁の震度データベース](https://www.data.jma.go.jp/eqdb/data/shindo/index.html#20260728162715) [令和8年熊本地震ポータル](https://www.jma.go.jp/jma/menu/20260728_kumamoto_jishin.html) [気象庁の区域一覧](https://www.jma.go.jp/jma/kishou/know/jishin/joho/shindo-name.html)
 
 <details>
 <summary>観測点ごとの震度を見る</summary>
@@ -36,10 +53,9 @@
 
 ## 特長
 
-- 履歴から地震を選ぶと、地図に震源と各地の震度が出ます。
-- 地域ごとの最大震度と観測点一覧を切り替えられます。観測点は震度別または都道府県別にまとめられます。
-- 緊急地震速報は予報と警報を色で示し、他のタブを開いているときも通知します。津波タブでは対象の沿岸線と地域別の情報を確認できます。
-- 画像地図は Sixel と Kitty に対応しています。
+- **地震履歴を見る。** 履歴から選んだ地震の震源と各地の震度を確認できます。地域ごとの最大震度と観測点ごとの記録を切り替えられます。
+- **緊急地震速報（EEW）の更新を追う。** 受信したEEWの情報(予報/警報)を表示します。地図は警報の対象地域と地域ごとの推定震度を切り替えられます。
+- **津波情報を確認する。** 大津波警報、津波警報、注意報、予報を沿岸線の色で示します。地域ごとの波高や第1波の見込みは、地図の横の一覧で確認できます。
 
 ## クイックスタート
 
@@ -47,10 +63,10 @@
 
 リリースがまだなければ、ソースからビルドできます。 [ビルド手順](#ソースからビルド)
 
-| 環境 | ファイル |
-| --- | --- |
-| Windows（x86-64） | `tuiquake-windows-x86_64.exe` |
-| Linux（x86-64 / ARM64） | `tuiquake-linux-x86_64` / `tuiquake-linux-aarch64` |
+| 環境                           | ファイル                                           |
+| ------------------------------ | -------------------------------------------------- |
+| Windows（x86-64）              | `tuiquake-windows-x86_64.exe`                      |
+| Linux（x86-64 / ARM64）        | `tuiquake-linux-x86_64` / `tuiquake-linux-aarch64` |
 | macOS（Intel / Apple Silicon） | `tuiquake-macos-x86_64` / `tuiquake-macos-aarch64` |
 
 ダウンロード先のディレクトリでファイルを実行します。以下は x86-64 の例です。
@@ -70,53 +86,39 @@ chmod +x ./tuiquake-linux-x86_64
 
 macOS でも、自分の機種用のファイル名で同じ手順を実行できます。
 
-地図の描画方式を選んだら `4` で設定を開き、「EEWデモ」を選んで `Enter` を押します。デモの主な操作は次のとおりです。
-
-- `Space` で再生
-- `F` で予報と警報を切り替え
-- `V` で警報対象と推定震度の地図を切り替え
-- `H` でヘルプを開く
-- `Esc` で設定に戻る
-
 ## 必要な環境
 
 画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。
-
-ターミナルアプリの対応OSをアイコンで示しています。🪟 Windows ／ 🐧 Linux ／ 🍎 macOS
-
-| ターミナルの例 | OS | 描画方式 |
-| --- | --- | --- |
-| [Windows Terminal 1.22以降](https://github.com/microsoft/terminal/discussions/18516) | 🪟 | Sixel |
-| [kitty](https://sw.kovidgoyal.net/kitty/) | 🐧 🍎 | Kitty |
-| [WezTerm](https://wezterm.org/features.html) | 🪟 🐧 🍎 | Kitty、Sixel（試験的） |
 
 <details>
 <summary>画像表示に対応するターミナル一覧（20件）</summary>
 
 Terminal Troveの「Image Support」に掲載された20件です。表の「—」は、参照した資料で対応を確認できなかった方式です。 [Terminal Troveの比較表](https://terminaltrove.com/compare/terminals/)
 
-| ターミナル | OS | Sixel | Kitty画像描画 |
-| --- | --- | --- | --- |
-| [Bobcat](https://github.com/ismail-yilmaz/Bobcat#features) | 🪟 🐧 🍎 | 対応 | 対応 |
-| [cmux](https://github.com/manaflow-ai/cmux/blob/main/docs/customizing-appearance.md) | 🍎 | — | 対応 |
-| [Contour Terminal](https://contour-terminal.org/features/) | 🪟 🐧 🍎 | 対応 | 対応 |
-| [foot](https://man.archlinux.org/man/foot.ini.5.en) | 🐧 | 対応 | — |
-| [Ghostty](https://ghostty.org/docs/features) | 🐧 🍎 | — | 対応 |
-| [iTerm2](https://iterm2.com/documentation-images.html) | 🍎 | [対応](https://iterm2.com/downloads.html) | 対応 |
-| [kitty](https://sw.kovidgoyal.net/kitty/graphics-protocol/) | 🐧 🍎 | — | 対応 |
-| [Konsole](https://kde.org/announcements/changelogs/gear/22.04.0/) | 🪟（[開発版](https://apps.kde.org/konsole/)） 🐧 🍎（ARM・開発版） | 対応 | 一部対応 |
-| [Mintty](https://mintty.github.io/mintty.1.html) | 🪟 | 対応 | — |
-| [mlterm](https://github.com/arakiken/mlterm/blob/master/doc/en/ReleaseNote) | 🪟 🐧 🍎（[旧macOSで動作確認](https://github.com/arakiken/mlterm)） | 対応 | — |
-| [Ratty](https://github.com/orhun/ratty) | 🪟 🐧 🍎 | — | 対応 |
-| [Rex](https://www.superlogical.com/rex/docs/installation) | 🪟（一部のベータ参加者） 🍎（ベータ） | — | [対応（比較表の記載）](https://terminaltrove.com/terminals/rex-terminal/) |
-| [Rio Terminal](https://rioterm.com/docs/features) | 🪟 🐧 🍎 | 対応 | 対応 |
-| [Tabby](https://github.com/Eugeny/tabby/blob/master/tabby-terminal/src/config.ts) | 🪟 🐧 🍎 | 対応（設定による） | — |
-| [Terminology](https://www.enlightenment.org/docs/apps/terminology#tycat) | 🐧 | — | — |
-| [Warp Terminal](https://docs.warp.dev/getting-started/migrate-to-warp/migrate-to-warp-from-ghostty/) | 🪟 🐧 🍎 | — | 一部対応 |
-| [WezTerm](https://wezterm.org/features.html) | 🪟 🐧 🍎 | 試験的 | 対応 |
-| [Windows Terminal](https://github.com/microsoft/terminal/discussions/18516) | 🪟 | 1.22以降 | — |
-| [xterm](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html) | 🪟（[Cygwin/X](https://cygwin.com/packages/summary/xterm.html)） 🐧 🍎（[XQuartz](https://www.xquartz.org/FAQs.html)） | 対応（VT340などの設定による） | — |
-| [Extraterm](https://github.com/sedwards2009/extraterm/blob/master/docs/guide.md#the-show-command) | 🪟 🐧 🍎 | — | — |
+凡例: 🪟 Windows ／ 🐧 Linux ／ 🍎 macOS
+
+| ターミナル                                                                                           | OS                                                                                                                     | Sixel                                     | Kitty画像描画                                                             |
+| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
+| [Bobcat](https://github.com/ismail-yilmaz/Bobcat)                                                    | 🪟 🐧 🍎                                                                                                               | 対応                                      | 対応                                                                      |
+| [cmux](https://cmux.com/)                                                                            | 🍎                                                                                                                     | —                                         | 対応                                                                      |
+| [Contour Terminal](https://contour-terminal.org/)                                                    | 🪟 🐧 🍎                                                                                                               | 対応                                      | 対応                                                                      |
+| [foot](https://codeberg.org/dnkl/foot)                                                               | 🐧                                                                                                                     | 対応                                      | —                                                                         |
+| [Ghostty](https://ghostty.org/)                                                                      | 🐧 🍎                                                                                                                  | —                                         | 対応                                                                      |
+| [iTerm2](https://iterm2.com/)                                                                        | 🍎                                                                                                                     | [対応](https://iterm2.com/downloads.html) | 対応                                                                      |
+| [kitty](https://sw.kovidgoyal.net/kitty/)                                                            | 🐧 🍎                                                                                                                  | —                                         | 対応                                                                      |
+| [Konsole](https://apps.kde.org/konsole/)                                                             | 🪟（[開発版](https://apps.kde.org/konsole/)） 🐧 🍎（ARM・開発版）                                                     | 対応                                      | 一部対応                                                                  |
+| [Mintty](https://mintty.github.io/)                                                                  | 🪟                                                                                                                     | 対応                                      | —                                                                         |
+| [mlterm](https://mlterm.sourceforge.net/)                                                            | 🪟 🐧 🍎（[旧macOSで動作確認](https://github.com/arakiken/mlterm)）                                                    | 対応                                      | —                                                                         |
+| [Ratty](https://github.com/orhun/ratty)                                                              | 🪟 🐧 🍎                                                                                                               | —                                         | 対応                                                                      |
+| [Rex](https://www.superlogical.com/)                                                                 | 🪟（一部のベータ参加者） 🍎（ベータ）                                                                                  | —                                         | [対応（比較表の記載）](https://terminaltrove.com/terminals/rex-terminal/) |
+| [Rio Terminal](https://rioterm.com/)                                                                 | 🪟 🐧 🍎                                                                                                               | 対応                                      | 対応                                                                      |
+| [Tabby](https://tabby.sh/)                                                                           | 🪟 🐧 🍎                                                                                                               | 対応（設定による）                        | —                                                                         |
+| [Terminology](https://www.enlightenment.org/about-terminology)                                       | 🐧                                                                                                                     | —                                         | —                                                                         |
+| [Warp Terminal](https://www.warp.dev/)                                                               | 🪟 🐧 🍎                                                                                                               | —                                         | 一部対応                                                                  |
+| [WezTerm](https://wezterm.org/)                                                                      | 🪟 🐧 🍎                                                                                                               | 試験的                                    | 対応                                                                      |
+| [Windows Terminal](https://learn.microsoft.com/ja-jp/windows/terminal/)                              | 🪟                                                                                                                     | 1.22以降                                  | —                                                                         |
+| [xterm](https://invisible-island.net/xterm/)                                                         | 🪟（[Cygwin/X](https://cygwin.com/packages/summary/xterm.html)） 🐧 🍎（[XQuartz](https://www.xquartz.org/FAQs.html)） | 対応（VT340などの設定による）             | —                                                                         |
+| [Extraterm](https://extraterm.org/)                                                                  | 🪟 🐧 🍎                                                                                                               | —                                         | —                                                                         |
 
 Terminologyは `tycat`、Extratermは `show` で画像を表示できます。実際の描画方式は、使用中の端末でTuiQuakeを起動して確認してください。
 
@@ -128,18 +130,18 @@ Terminologyは `tycat`、Extratermは `show` で画像を表示できます。�
 
 ## 主なキー
 
-| 操作 | キー |
-| --- | --- |
-| タブ移動 | 1 地震 / 2 EEW / 3 津波 / 4 設定 / 5 アプリ情報 |
-| 地震履歴を選ぶ / 各地の震度をスクロール | `↑` `↓` / `←` `→` |
-| 地図を移動 / 拡大・縮小 | `W` `A` `S` `D` / `+` `−` |
-| 地震の震度表示を切り替え（地域別 / 観測点） | `V` |
-| EEWの地図を切り替え（警報対象 / 推定震度） | `V` |
-| 津波の地図を切り替え（全国 / 対象沿岸） | `Z` |
-| 文字で詳細を表示 | `I` |
-| 今のタブの操作を確認 / 終了 | `H` / `Q` |
+| 操作                                        | キー                                            |
+| ------------------------------------------- | ----------------------------------------------- |
+| タブ移動                                    | 1 地震 / 2 EEW / 3 津波 / 4 設定 / 5 アプリ情報 |
+| 地震履歴を選ぶ / 各地の震度をスクロール     | `↑` `↓` / `←` `→`                               |
+| 地図を移動 / 拡大・縮小                     | `W` `A` `S` `D` / `+` `−`                       |
+| 地震の震度表示を切り替え（地域別 / 観測点） | `V`                                             |
+| EEWの地図を切り替え（警報対象 / 推定震度）  | `V`                                             |
+| 津波の地図を切り替え（全国 / 対象沿岸）     | `Z`                                             |
+| 文字で詳細を表示                            | `I`                                             |
+| 今のタブの操作を確認 / 終了                 | `H` / `Q`                                       |
 
-狭い端末では `B` で地震履歴と地図を切り替えられます。震度の 5- / 5+ は 5弱 / 5強、6- / 6+ は 6弱 / 6強です。
+狭い端末では `B` で地震履歴と地図を切り替えられます。
 
 ## 設定
 
@@ -152,7 +154,7 @@ Terminologyは `tycat`、Extratermは `show` で画像を表示できます。�
 
 ## 仕組みとデータ
 
-上部のステータスで接続先、最後の応答時刻（JST）、EEW・津波の状況が分かります。
+右上のステータスで接続先、最後の応答時刻（JST）、EEW・津波の状況が分かります。
 
 ### 配信元
 
@@ -164,7 +166,7 @@ Terminologyは `tycat`、Extratermは `show` で画像を表示できます。�
 
 地図は `V` で「警報対象」と「推定震度」を切り替えられます。推定震度は気象庁の配信値を使います。範囲が示されたときはその上限、下限だけが示されたときはその下限の色で描画します。受信した範囲は一覧で確認できます。「震源周辺」にすると、表示対象が収まる範囲で最大約10.5倍まで自動で拡大します。 [地震動の予報業務許可に関する気象庁のFAQ](https://www.jma.go.jp/jma/kishou/minkan/q_a_s.html)
 
-「速報概要」の推定最大震度も、幅がある場合は上限をバッジに使います。「震度4程度」「震度4程度以上」のように震度が1つ示されていれば、その値を使います。仮定震源ではマグニチュードと深さに代わり、「PLUM法による仮定震源」と表示します。
+「速報概要」の推定最大震度も、幅がある場合は上限をバッジに使います。
 
 ### 津波情報
 
@@ -185,14 +187,14 @@ cargo build --release --locked
 Windows の PowerShell では `.\target\release\tuiquake.exe`、Linux / macOS では `./target/release/tuiquake` で起動します。
 
 <details>
-<summary>コマンドで直接表示する</summary>
+<summary>コマンドで直接表示する(開発者向け)</summary>
 
-| コマンド | 表示内容 |
-| --- | --- |
-| `latest` | 最新の地震 |
-| `eew` / `replay --history` | 最新の緊急地震速報1報（P2P切り替え時は警報） |
-| `replay --delay 4` | 架空の地震と速報のデモを4秒間隔で表示。オフラインでも利用可能 |
-| `watch` | 地震と緊急地震速報を受信し次第更新 |
+| コマンド                   | 表示内容                                                      |
+| -------------------------- | ------------------------------------------------------------- |
+| `latest`                   | 最新の地震                                                    |
+| `eew` / `replay --history` | 最新の緊急地震速報1報（P2P切り替え時は警報）                  |
+| `replay --delay 4`         | 架空の地震と速報のデモを4秒間隔で表示。オフラインでも利用可能 |
+| `watch`                    | 地震と緊急地震速報を受信し次第更新                            |
 
 ```powershell
 .\target\release\tuiquake.exe latest --japan
@@ -222,20 +224,19 @@ Windows の PowerShell では `.\target\release\tuiquake.exe`、Linux / macOS �
 
 ## English
 
-TuiQuake is a Japanese-language terminal app for browsing earthquakes, station-level seismic intensity, earthquake early warnings, and tsunami bulletins. It offers Sixel, Kitty, and text maps. It is an unofficial viewer. For safety decisions, consult official information from the Japan Meteorological Agency or local authorities.
+TuiQuake is a Japanese-language terminal app for browsing earthquakes, station-level seismic intensity, earthquake early warnings, and tsunami bulletins. It offers Sixel, Kitty, and text maps.  
+It is an unofficial viewer. For safety decisions, consult official information from the JMA or local authorities.
 
 ## ライセンスとデータの出典
 
-TuiQuake のオリジナルコードは [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）です。配布バイナリの依存ライブラリのライセンスは [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に掲載しています。
+TuiQuake のオリジナルコードは [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）です。配布バイナリの依存ライブラリのライセンスは [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に記載しております。
 
-- **地震・EEW・津波** — データ提供 Wolfx Project。気象庁発表の情報を [Wolfx WebSocket](https://wolfx.jp/docs/websocket/) と [Wolfx Open API](https://wolfx.jp/docs/open-api/) 経由で取得します。データを使う機能は無償で提供します。 [Wolfx Project の利用規約](https://wolfx.jp/legal/terms/)
-- **予備配信** — P2P地震情報。 [P2P地震情報 API](https://www.p2pquake.net/develop/json_api_v2/) [二次利用ガイドライン](https://www.p2pquake.net/secondary_use/)
-- **震度観測点と区域** — 気象庁の [震度観測点一覧](https://www.data.jma.go.jp/eqev/data/bulletin/shindo.html) と [予報区等GISデータ「地震情報／細分区域」](https://www.data.jma.go.jp/developer/gis.html) を TuiQuake が加工しました。 [気象庁ホームページの利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)
-- **津波地図** — 気象庁の防災情報サイトの津波予報区データから、区域コードと沿岸線を抽出して TuiQuake が描画しています。 [気象庁の津波予報区](https://www.jma.go.jp/jma/kishou/know/jishin/joho/tsunami-yohoku.html) [地図データ（GeoJSON）](https://www.jma.go.jp/bosai/common/const/geojson/tsunami.json) [気象庁ホームページの利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)
-- **湖沼** — 国土交通省の [国土数値情報（湖沼データ W09、平成17年版）](https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-W09-v2_2.html) から面積10 km²以上の湖沼を抽出し、TuiQuake が輪郭を簡略化しました。整備時点と現在の湖岸線には差がある場合があります。「商用可」の条件が適用されます。 [国土数値情報の利用規約](https://nlftp.mlit.go.jp/ksj/other/agreement_02.html)
-- **周辺陸地** — [Natural Earth 1:50m Land](https://www.naturalearthdata.com/downloads/50m-physical-vectors/50m-land/) のうち、東経110〜159度・北緯18〜55度の範囲を TuiQuake が切り出しました。 [Natural Earth の利用条件（パブリックドメイン）](https://www.naturalearthdata.com/about/terms-of-use/)
-- **ロゴ** — Glenn Chappell の [FIGlet Slant](https://www.figlet.org/cgi-bin/fontdb_example.cgi?font=slant.flf) で生成した文字列を TuiQuake が色付けしています。
-
+- **地震・EEW・津波** — データ提供 Wolfx Project。気象庁発表の情報を [Wolfx WebSocket](https://wolfx.jp/docs/websocket/) と [Wolfx Open API](https://wolfx.jp/docs/open-api/) 経由で取得します。[Wolfx Project の利用規約](https://wolfx.jp/legal/terms/)
+- **予備配信(フォールバック)** — P2P地震情報。 [P2P地震情報 API](https://www.p2pquake.net/develop/json_api_v2/) [二次利用ガイドライン](https://www.p2pquake.net/secondary_use/)
+- **震度観測点と区域** — 気象庁の [震度観測点一覧](https://www.data.jma.go.jp/eqev/data/bulletin/shindo.html) と [予報区等GISデータ「地震情報／細分区域」](https://www.data.jma.go.jp/developer/gis.html) を加工しました。 [気象庁ホームページの利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)
+- **津波地図** — 気象庁の防災情報サイトの津波予報区データから、区域コードと沿岸線を抽出して描画しています。 [気象庁の津波予報区](https://www.jma.go.jp/jma/kishou/know/jishin/joho/tsunami-yohoku.html) [地図データ（GeoJSON）](https://www.jma.go.jp/bosai/common/const/geojson/tsunami.json) [気象庁ホームページの利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)
+- **湖沼** — 国土交通省の [国土数値情報（湖沼データ W09、平成17年版）](https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-W09-v2_2.html) から面積10 km²以上の湖沼を抽出し、輪郭を簡略化しました。整備時点と現在の湖岸線には差がある場合があります。 [国土数値情報の利用規約](https://nlftp.mlit.go.jp/ksj/other/agreement_02.html)
+- **周辺陸地** — [Natural Earth 1:50m Land](https://www.naturalearthdata.com/downloads/50m-physical-vectors/50m-land/) のうち、東経110〜159度・北緯18〜55度の範囲を切り出しました。 [Natural Earth の利用条件（パブリックドメイン）](https://www.naturalearthdata.com/about/terms-of-use/)
 <details>
 <summary>気象庁の地図データの加工内容</summary>
 

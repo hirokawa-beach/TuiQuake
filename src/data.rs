@@ -251,7 +251,7 @@ fn entries(value: &Value) -> impl Iterator<Item = &Value> {
 fn station_location(name: &str) -> Option<Location> {
     static STATIONS: OnceLock<HashMap<&'static str, [f64; 2]>> = OnceLock::new();
     let locations = STATIONS.get_or_init(|| {
-        serde_json::from_str(include_str!("../stations.json")).expect("station locations")
+        serde_json::from_str(include_str!("../data/stations.json")).expect("station locations")
     });
     let &[lon, lat] = locations.get(name.trim_end_matches(['＊', '*']).trim_end())?;
     Location::new(lon, lat)

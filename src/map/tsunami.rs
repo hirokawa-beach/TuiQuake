@@ -18,7 +18,8 @@ fn coasts() -> &'static CoastMap {
     static COASTS: OnceLock<CoastMap> = OnceLock::new();
     COASTS.get_or_init(|| {
         let source: HashMap<String, Vec<Vec<[f64; 2]>>> =
-            serde_json::from_str(include_str!("../../tsunami_coasts.json")).expect("津波予報区");
+            serde_json::from_str(include_str!("../../data/tsunami_coasts.json"))
+                .expect("津波予報区");
         let districts: HashMap<_, _> = source
             .into_iter()
             .filter_map(|(code, paths)| {

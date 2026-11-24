@@ -303,11 +303,11 @@ TuiQuakeのオリジナルコードは [GNU General Public License v3.0](LICENSE
 <details>
 <summary>地図データの加工内容</summary>
 
-- `stations.json` には震度観測点一覧から抽出した名前と座標を収録しています。位置情報のない観測点は文字詳細に表示します。
-- `regions.json` には地震情報の細分区域の名称・コード・ポリゴンを収録しています。共有境界をまとめて簡略化し、細い隙間を補正しています。ごく小さな島の輪郭は省略しています。
-- `tsunami_coasts.json` には津波予報区の区域コードと沿岸線を収録しています。
-- 湖沼は面積10 km²以上を抽出し、輪郭を簡略化しています。整備時点と現在の湖岸線には差がある場合があります。
-- 周辺陸地は、東経110〜159度・北緯18〜55度を切り出しています。
+- `data/stations.json` には震度観測点一覧から抽出した名前と座標を収録しています。位置情報のない観測点は文字詳細に表示します。
+- `data/regions.json` には地震情報の細分区域の名称・コード・ポリゴンを収録しています。共有境界をまとめて簡略化し、細い隙間を補正しています。ごく小さな島の輪郭は省略しています。
+- `data/tsunami_coasts.json` には津波予報区の区域コードと沿岸線を収録しています。
+- `data/lakes.json` には、面積10 km²以上の湖沼の輪郭を簡略化して収録しています。整備時点と現在の湖岸線には差がある場合があります。
+- `data/surroundings.json` には、東経110〜159度・北緯18〜55度の陸地を収録しています。
 
 元の地図と利用上の注意は公開元のページに記載されています。 [気象庁の予報区等GISデータ一覧][jma-gis]
 
@@ -316,15 +316,15 @@ TuiQuakeのオリジナルコードは [GNU General Public License v3.0](LICENSE
 <details>
 <summary>地図データを再生成する（開発者向け）</summary>
 
-通常のビルドではリポジトリに含まれる地図データを使います。再生成するには、気象庁の一覧で「地震情報／細分区域」を選び、湖沼データと津波予報区の `tsunami.json` も取得します。 [気象庁の予報区等GISデータ一覧][jma-gis] [国土交通省の湖沼データ][mlit-lakes] [気象庁の津波予報区GeoJSON][jma-tsunami-json]
+通常のビルドでは `data/` の地図データを使います。再生成するには、気象庁の一覧で「地震情報／細分区域」を選び、湖沼データと津波予報区の `tsunami.json` も取得します。 [気象庁の予報区等GISデータ一覧][jma-gis] [国土交通省の湖沼データ][mlit-lakes] [気象庁の津波予報区GeoJSON][jma-tsunami-json]
 
 Python 3.11以上とNode.js 20.11以上で、リポジトリのルートから次のコマンドを実行します。
 
 ```powershell
 npm install --no-save --no-package-lock --ignore-scripts mapshaper@0.8.1
-python tools/prepare_regions.py 20240520_AreaForecastLocalE_GIS.zip regions.json
-python tools/prepare_lakes.py W09-05_GML.zip lakes.json
-python tools/prepare_tsunami.py tsunami.json tsunami_coasts.json
+python tools/prepare_regions.py 20240520_AreaForecastLocalE_GIS.zip data/regions.json
+python tools/prepare_lakes.py W09-05_GML.zip data/lakes.json
+python tools/prepare_tsunami.py tsunami.json data/tsunami_coasts.json
 ```
 
 </details>

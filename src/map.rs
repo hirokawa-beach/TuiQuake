@@ -346,7 +346,7 @@ struct Extent {
 impl Atlas {
     pub fn load() -> Result<Self> {
         let regions: BTreeMap<String, (String, Polygons)> =
-            serde_json::from_str(include_str!("../regions.json"))?;
+            serde_json::from_str(include_str!("../data/regions.json"))?;
         let mut names = HashMap::new();
         let mut codes = HashMap::new();
         let regions: Vec<_> = regions
@@ -367,8 +367,10 @@ impl Atlas {
                     .and_then(Shape::label_position)
             })
             .collect();
-        let surroundings = shapes(serde_json::from_str(include_str!("../surroundings.json"))?);
-        let lakes = shapes(serde_json::from_str(include_str!("../lakes.json"))?);
+        let surroundings = shapes(serde_json::from_str(include_str!(
+            "../data/surroundings.json"
+        ))?);
+        let lakes = shapes(serde_json::from_str(include_str!("../data/lakes.json"))?);
         let (x1, y1) = project(Location {
             lon: 119.7,
             lat: 21.5,

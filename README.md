@@ -59,7 +59,7 @@ _表示している地震は過去のものです。_
 
 ## クイックスタート
 
-公開済みのバイナリがあれば、OSとCPUに合うファイルをダウンロードしてください。 [Releases](https://github.com/hirokawa-beach/TuiQuake/releases)
+リリースがあれば、OSとCPUに合うファイルをダウンロードしてください。 [Releases](https://github.com/hirokawa-beach/TuiQuake/releases)
 
 リリースがまだなければ、ソースからビルドできます。 [ビルド手順](#ソースからビルド)
 
@@ -67,7 +67,7 @@ _表示している地震は過去のものです。_
 | ------------------------------ | -------------------------------------------------- |
 | Windows（x86-64） | `tuiquake-windows-x86_64.msi`（インストーラー） / `tuiquake-windows-x86_64.exe`（単体版） |
 | Linux（x86-64 / ARM64） | `tuiquake-linux-x86_64.deb` / `tuiquake-linux-aarch64.deb`（Ubuntu・Debian向け）。拡張子のない実行ファイルも選べます。 |
-| macOS（Intel / Apple Silicon） | Homebrew、または `tuiquake-macos-x86_64` / `tuiquake-macos-aarch64` |
+| macOS（Intel / Apple Silicon） | Homebrew / `tuiquake-macos-x86_64.pkg` / `tuiquake-macos-aarch64.pkg`。インストール不要の実行ファイルも選べます。 |
 
 **Windows**
 
@@ -77,14 +77,23 @@ _表示している地震は過去のものです。_
 
 **Linux（Ubuntu・Debianなど）**
 
-OSとCPUに合う `.deb` を保存したフォルダでインストールします。以下はx86-64の例です。
+ダウンロードした `.deb` の保存先で、CPUに合うコマンドを実行します。
+
+**x86-64（amd64）**
 
 ```bash
 sudo apt install ./tuiquake-linux-x86_64.deb
 tuiquake
 ```
 
-ARM64ではファイル名を `tuiquake-linux-aarch64.deb` に置き換えてください。アンインストールは `sudo apt remove tuiquake` で行えます。
+**ARM64（aarch64）**
+
+```bash
+sudo apt install ./tuiquake-linux-aarch64.deb
+tuiquake
+```
+
+アンインストールは `sudo apt remove tuiquake` で行えます。
 
 **macOS（Homebrew）**
 
@@ -99,14 +108,49 @@ tuiquake
 
 Homebrew 5以前は `brew trust` の行を省けます。初回はソースからビルドするため、時間がかかることがあります。
 
-**Linux・macOSで実行ファイルを直接使う**
+**macOS（インストーラー）**
 
-実行ファイルを保存したフォルダで実行します。以下はLinux x86-64の例です。Linux ARM64やmacOSではファイル名を自分の機種用に置き換えてください。
+- **Intel Mac** は `tuiquake-macos-x86_64.pkg`
+- **Apple Silicon Mac** は `tuiquake-macos-aarch64.pkg`
+
+ダウンロードした `.pkg` を開いてインストールします。新しく開いたターミナルで `tuiquake` と入力すると起動できます。
+
+このインストーラーは未署名・未公証です。macOSに開くのを止められた場合は、上のHomebrew手順を利用できます。
+
+<details>
+<summary>Linux・macOSでインストールせずに起動する</summary>
+
+ダウンロードした実行ファイルの保存先で、該当するコマンドを実行します。
+
+**Linux x86-64**
 
 ```bash
 chmod +x ./tuiquake-linux-x86_64
 ./tuiquake-linux-x86_64
 ```
+
+**Linux ARM64**
+
+```bash
+chmod +x ./tuiquake-linux-aarch64
+./tuiquake-linux-aarch64
+```
+
+**macOS Intel**
+
+```bash
+chmod +x ./tuiquake-macos-x86_64
+./tuiquake-macos-x86_64
+```
+
+**macOS Apple Silicon**
+
+```bash
+chmod +x ./tuiquake-macos-aarch64
+./tuiquake-macos-aarch64
+```
+
+</details>
 
 ## 必要な環境
 

@@ -118,6 +118,38 @@ jobs:
           trap 'sudo apt-get remove -y tuiquake' EXIT
           test "$(command -v tuiquake)" = /usr/bin/tuiquake
           test "$(tuiquake --version)" = "$(target/release/tuiquake --version)"
+      - name: Build and verify macOS installer
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+          SOURCE: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          version_output=$("./$SOURCE" --version)
+          if [[ ! $version_output =~ ^TuiQuake\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "Could not determine the package version from $version_output" >&2
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          rustup component add rust-docs --toolchain stable
+          rust_notice="$(rustc +stable --print sysroot)/share/doc/rust/COPYRIGHT-library.html"
+
+          work=$(mktemp -d "${RUNNER_TEMP}/tuiquake-pkg.XXXXXX")
+          trap 'rm -rf -- "$work"' EXIT
+          payload="$work/root"
+          docs=usr/local/share/doc/tuiquake
+          mkdir -p "$payload/usr/local/bin" "$payload/$docs"
+          install -m 755 "$SOURCE" "$payload/usr/local/bin/tuiquake"
+          install -m 644 LICENSE "$payload/$docs/LICENSE.txt"
+          install -m 644 THIRD_PARTY_NOTICES.txt "$payload/$docs/THIRD_PARTY_NOTICES.txt"
+          install -m 644 "$rust_notice" "$payload/$docs/RUST-STDLIB-NOTICES.html"
+
+          package="release-assets/$ASSET.pkg"
+          pkgbuild --root "$payload" --install-location / --identifier io.github.hirokawabeach.tuiquake --version "$version" "$package"
+          pkgutil --expand-full "$package" "$work/expanded"
+          diff -r "$payload" "$work/expanded/Payload"
+          test "$("$work/expanded/Payload/usr/local/bin/tuiquake" --version)" = "$version_output"
       - name: Test Homebrew installation
         if: runner.os == 'macOS' && github.ref_type == 'tag'
         shell: bash

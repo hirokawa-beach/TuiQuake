@@ -6,6 +6,7 @@ use std::{
 use crate::data::{Bulletin, Location, Result};
 
 mod tsunami;
+mod waves;
 pub use tsunami::{has_coast, tsunami_color};
 
 pub type Color = u8;
@@ -24,7 +25,9 @@ const TSUNAMI_MAJOR_WARNING: Color = 26;
 pub const TEXT_CELL_WIDTH: usize = 4;
 pub const TEXT_CELL_HEIGHT: usize = 8;
 pub(crate) const SHORT_INTENSITIES: [&str; 9] = ["1", "2", "3", "4", "5-", "5+", "6-", "6+", "7"];
-pub const PALETTE: [Rgb; 27] = [
+pub const P_WAVE: Color = 27;
+pub const S_WAVE: Color = 28;
+pub const PALETTE: [Rgb; 29] = [
     (15, 27, 42),
     (54, 91, 98),
     (36, 55, 66),
@@ -52,6 +55,8 @@ pub const PALETTE: [Rgb; 27] = [
     (255, 222, 94),
     (255, 74, 83),
     (195, 95, 255),
+    (85, 213, 252),
+    (246, 104, 207),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -115,6 +120,7 @@ struct MapViewport {
 pub struct View {
     pub national: bool,
     pub eew_layer: EewLayer,
+    pub demo_wave_seconds: Option<f64>,
     manual_zoom: Option<u16>,
     center: Option<(f64, f64)>,
     rendered: Option<MapViewport>,
@@ -125,6 +131,7 @@ impl View {
         Self {
             national,
             eew_layer: EewLayer::default(),
+            demo_wave_seconds: None,
             manual_zoom: None,
             center: None,
             rendered: None,
@@ -569,6 +576,11 @@ impl Atlas {
             }
         }
         self.draw_base(raster, extent, colors.into_iter(), image);
+        if let Some(seconds) = view.demo_wave_seconds
+            && let Some((center, depth)) = bulletin.epicenter.zip(bulletin.depth)
+        {
+            raster.draw_demo_waves(center, f64::from(depth), seconds, extent);
+        }
         if image && layer == Layer::Stations {
             for point in bulletin.stations.iter().rev() {
                 if let Some((where_, level)) = point.location.zip(point.level.index()) {
@@ -647,6 +659,43 @@ pub struct Raster {
 }
 
 impl Raster {
+    fn stroke_line(&mut self, from: [f64; 2], to: [f64; 2], radius: usize, color: Color) {
+        let delta = [to[0] - from[0], to[1] - from[1]];
+        let mut enter: f64 = 0.0;
+        let mut exit: f64 = 1.0;
+        // Clip the segment before walking pixels, including when manually zoomed in.
+        for (axis, limit) in [self.width - 1, self.height - 1].into_iter().enumerate() {
+            let d = delta[axis];
+            let position = from[axis];
+            if d == 0.0 {
+                if !(0.0..=limit as f64).contains(&position) {
+                    return;
+                }
+            } else {
+                let first = -position / d;
+                let last = (limit as f64 - position) / d;
+                enter = enter.max(first.min(last));
+                exit = exit.min(first.max(last));
+            }
+        }
+        if enter > exit {
+            return;
+        }
+        let pixels = ((exit - enter) * delta[0].abs().max(delta[1].abs())).ceil() as usize;
+        for index in 0..=pixels {
+            let at = enter + (exit - enter) * index as f64 / pixels.max(1) as f64;
+            let x = ((from[0] + at * delta[0]).round() as usize).min(self.width - 1);
+            let y = ((from[1] + at * delta[1]).round() as usize).min(self.height - 1);
+            for y in y.saturating_sub(radius)..=(y + radius).min(self.height - 1) {
+                let start = y * self.width + x.saturating_sub(radius);
+                let end = y * self.width + (x + radius).min(self.width - 1);
+                for pixel in &mut self.pixels[start..=end] {
+                    *pixel = (*pixel).max(color);
+                }
+            }
+        }
+    }
+
     pub fn resize(&mut self, width: usize, height: usize) {
         self.width = width;
         self.height = height;
@@ -923,6 +972,8 @@ pub fn plain(color: Color) -> char {
         TSUNAMI_WARNING => 'W',
         TSUNAMI_ADVISORY => 'A',
         TSUNAMI_FORECAST => 'F',
+        P_WAVE => 'P',
+        S_WAVE => 'S',
         value if value >= STATION => char::from(b"1234abcde"[(value - STATION) as usize]),
         value => char::from(b"1234abcde"[(value - REGION) as usize]),
     }

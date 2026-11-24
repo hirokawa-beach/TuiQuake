@@ -198,6 +198,10 @@ impl Renderer {
             };
             legend.push(('✚', label, map::EPICENTER));
         }
+        if view.demo_wave_seconds.is_some() {
+            legend.push(('─', "P波（概算）", map::P_WAVE));
+            legend.push(('─', "S波（概算）", map::S_WAVE));
+        }
         if !forecast_map && !b.warning_areas.is_empty() {
             legend.push(('■', "警報対象", map::WARNING));
         }

@@ -106,50 +106,11 @@ impl Atlas {
         for (coast, color) in active() {
             for path in &coast.paths {
                 for segment in path.windows(2) {
-                    raster.stroke_coast(to_pixel(segment[0]), to_pixel(segment[1]), radius, color);
+                    raster.stroke_line(to_pixel(segment[0]), to_pixel(segment[1]), radius, color);
                 }
             }
         }
         view
-    }
-}
-
-impl Raster {
-    fn stroke_coast(&mut self, from: [f64; 2], to: [f64; 2], radius: usize, color: Color) {
-        let delta = [to[0] - from[0], to[1] - from[1]];
-        let mut enter: f64 = 0.0;
-        let mut exit: f64 = 1.0;
-        // Clip the segment before walking pixels, including when manually zoomed in.
-        for (axis, limit) in [self.width - 1, self.height - 1].into_iter().enumerate() {
-            let d = delta[axis];
-            let position = from[axis];
-            if d == 0.0 {
-                if !(0.0..=limit as f64).contains(&position) {
-                    return;
-                }
-            } else {
-                let first = -position / d;
-                let last = (limit as f64 - position) / d;
-                enter = enter.max(first.min(last));
-                exit = exit.min(first.max(last));
-            }
-        }
-        if enter > exit {
-            return;
-        }
-        let pixels = ((exit - enter) * delta[0].abs().max(delta[1].abs())).ceil() as usize;
-        for index in 0..=pixels {
-            let at = enter + (exit - enter) * index as f64 / pixels.max(1) as f64;
-            let x = ((from[0] + at * delta[0]).round() as usize).min(self.width - 1);
-            let y = ((from[1] + at * delta[1]).round() as usize).min(self.height - 1);
-            for y in y.saturating_sub(radius)..=(y + radius).min(self.height - 1) {
-                let start = y * self.width + x.saturating_sub(radius);
-                let end = y * self.width + (x + radius).min(self.width - 1);
-                for pixel in &mut self.pixels[start..=end] {
-                    *pixel = (*pixel).max(color);
-                }
-            }
-        }
     }
 }
 

@@ -974,6 +974,9 @@ impl App {
             self.demo.next = (*i + 1 < self.demo.frames.len()).then(|| now + self.demo.delay);
             changed = true;
         }
+        if self.tab == Tab::Demo && self.page == Page::Map {
+            changed |= self.demo.tick_wave(now, self.selection[Tab::Demo.index()]);
+        }
         changed
     }
 
@@ -1265,6 +1268,11 @@ impl App {
         let live_eew = self.tab == Tab::Eew;
         let eew_source = live_eew.then(|| format!("気象庁発表 · {}", bulletin.provider.label()));
         let mut view = self.view;
+        view.demo_wave_seconds = if self.tab == Tab::Demo {
+            self.demo.wave_seconds(&bulletin)
+        } else {
+            None
+        };
         view.eew_layer = if bulletin.eew {
             self.eew_layer
         } else {

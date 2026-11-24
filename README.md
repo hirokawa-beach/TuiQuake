@@ -25,7 +25,7 @@
 - [設定](#設定)
 - [仕組みとデータ](#仕組みとデータ)
 - [ソースからビルド](#ソースからビルド)
-- [トラブルシュート](#トラブルシュート)
+- [困ったときは⋯](#トラブルシュート)
 - [English](#english)
 - [ライセンスとデータの出典](#ライセンスとデータの出典)
 
@@ -33,9 +33,7 @@
 
 <a href="docs/media/earthquakes-regions.png"><img src="docs/media/earthquakes-regions.png" alt="令和8年熊本地震の地域別表示。各区域の最大震度を色と数字で表示。" width="760"></a>
 
-_表示している地震は過去のものです。_
-
-2026年7月28日の令和8年熊本地震です。
+_表示している地震は過去のもの(令和8年熊本地震)です。_
 
 **参考資料**　[気象庁の震度データベース](https://www.data.jma.go.jp/eqdb/data/shindo/index.html#20260728162715) / [令和8年熊本地震ポータル](https://www.jma.go.jp/jma/menu/20260728_kumamoto_jishin.html) / [気象庁の区域一覧](https://www.jma.go.jp/jma/kishou/know/jishin/joho/shindo-name.html)
 
@@ -44,14 +42,14 @@ _表示している地震は過去のものです。_
 
 <a href="docs/media/earthquakes.png"><img src="docs/media/earthquakes.png" alt="令和8年熊本地震の観測点表示。震度1から7を観測した地点を色で表示。" width="760"></a>
 
-地図の点は本震で震度1〜7を観測した1,252地点です。地震タブで `V` を押すと、地域別と観測点別の表示を切り替えられます。
+地震タブで `V` を押すと、地域別と観測点別の表示を切り替えられます。
 
 </details>
 
 <details>
 <summary>令和8年熊本地震のEEWを再生（第24報まで）</summary>
 
-[EEWの再生動画を開く（MP4・32.2秒）](docs/media/eew-demo.mp4)
+https://github.com/user-attachments/assets/9dc57404-89aa-48c5-88ef-92d079bdc0ee
 
 </details>
 
@@ -60,14 +58,15 @@ _表示している地震は過去のものです。_
 - **地震履歴を見る。** 履歴から選んだ地震の震源と各地の震度を確認できます。地域ごとの最大震度と観測点ごとの記録を切り替えられます。
 - **緊急地震速報（EEW）の更新を追う。** 受信した予報と警報を表示します。地図は警報の対象地域と地域ごとの推定震度を切り替えられます。
 - **津波情報を確認する。** 大津波警報、津波警報、注意報、予報を沿岸線の色で示します。地域ごとの波高や第1波の見込みは、地図の横の一覧で確認できます。
+- **軽い** TUIをRustで実装し、メモリ/CPU使用量を抑えています。
 
 ## 導入方法
 
-配布先は GitHub Releases です。OSとCPUに合うファイルを選んでください。以下は v0.1.0 のファイル名です。 [ダウンロード](https://github.com/hirokawa-beach/TuiQuake/releases) · [ソースからビルド](#ソースからビルド)
+配布先は GitHub Releases です。OSとCPUに合うファイルを選んでください。 [ダウンロード](https://github.com/hirokawa-beach/TuiQuake/releases) · [ソースからビルド](#ソースからビルド)
 
 ### Windows（MSI）
 
-`tuiquake-0.1.0-windows-x86_64.msi` を開いてインストールします。新しいターミナルで `tuiquake` と入力してください。削除する場合は、Windowsの「インストールされているアプリ」からアンインストールできます。
+`tuiquake-{version}-windows-x86_64.msi` を開いてインストールします。新しいターミナルで `tuiquake` と入力してください。削除する場合は、Windowsの「インストールされているアプリ」からアンインストールできます。
 
 > [!NOTE]
 > Windows向けの `.msi` と `.exe` は未署名です。起動時にMicrosoft Defender SmartScreenの警告が出る場合があります。
@@ -76,10 +75,10 @@ _表示している地震は過去のものです。_
 
 64ビットOSと `libc6 2.34` 以上が必要です。Raspberry Pi OSではBookworm以降の64ビット版を使ってください。
 
-x86-64は `tuiquake_0.1.0_amd64.deb`、ARM64は `tuiquake_0.1.0_arm64.deb` をダウンロードします。保存先のフォルダで次を実行してください。コマンドがCPUに合うファイル名を選びます。
+x86-64は `tuiquake_{version}_amd64.deb`、ARM64は `tuiquake_{version}_arm64.deb` をダウンロードします。保存先のフォルダで次を実行してください。コマンドがCPUに合うファイル名を選びます。
 
 ```bash
-sudo apt install "./tuiquake_0.1.0_$(dpkg --print-architecture).deb"
+sudo apt install "./tuiquake_{version}_$(dpkg --print-architecture).deb"
 tuiquake
 ```
 
@@ -99,7 +98,7 @@ tuiquake
 <details>
 <summary>macOS用の .pkg を使う</summary>
 
-Intel Macは `tuiquake-0.1.0-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-0.1.0-macos-aarch64.pkg` を開きます。インストール後はターミナルで `tuiquake` と入力してください。
+Intel Macは `tuiquake-{version}-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-{version}-macos-aarch64.pkg` を開きます。インストール後はターミナルで `tuiquake` と入力してください。
 
 `.pkg` は未署名・未公証です。
 
@@ -110,16 +109,16 @@ Intel Macは `tuiquake-0.1.0-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-
 
 ダウンロードしたファイルの保存先で起動します。Linux・macOSでは実行権限を付けてから起動します。
 
-- **Windows x86-64（PowerShell）** — `.\tuiquake-0.1.0-windows-x86_64.exe`
-- **Linux x86-64・ARM64** — `chmod +x ./tuiquake-0.1.0-linux-$(uname -m) && ./tuiquake-0.1.0-linux-$(uname -m)`
-- **macOS Intel** — `chmod +x ./tuiquake-0.1.0-macos-x86_64 && ./tuiquake-0.1.0-macos-x86_64`
-- **macOS Apple Silicon** — `chmod +x ./tuiquake-0.1.0-macos-aarch64 && ./tuiquake-0.1.0-macos-aarch64`
+- **Windows x86-64（PowerShell）** — `.\tuiquake-{version}-windows-x86_64.exe`
+- **Linux x86-64・ARM64** — `chmod +x ./tuiquake-{version}-linux-$(uname -m) && ./tuiquake-{version}-linux-$(uname -m)`
+- **macOS Intel** — `chmod +x ./tuiquake-{version}-macos-x86_64 && ./tuiquake-{version}-macos-x86_64`
+- **macOS Apple Silicon** — `chmod +x ./tuiquake-{version}-macos-aarch64 && ./tuiquake-{version}-macos-aarch64`
 
 </details>
 
 ### 更新を確認する
 
-TUIを起動すると、GitHub Releasesで新版を1回確認します。新版があると「5 アプリ情報」に `↑更新` が付きます。タブを開いて Enter を押すと、ブラウザーでリリースページを開けます。
+起動時にGitHub Releasesで新版を1回確認します。新版があると「5 アプリ情報」に `↑更新` のステータスが付きます。タブを開いて Enter を押すと、ブラウザーでリリースページが開かれますので、アップデートしてください。
 
 ### ダウンロードしたファイルを検証する
 
@@ -132,10 +131,10 @@ TUIを起動すると、GitHub Releasesで新版を1回確認します。新版�
 Linux・macOSでは、一致したファイルの横に `OK` と表示されます。
 
 ## 必要な環境
-~~TUIが表示できる(ANSI制御に対応した対話型の)ターミナルで使用できます。~~  
+~~TUIが表示できる(ANSI制御に対応した対話型の)ターミナルで使用できます。~~  もちろん、インターネット接続も必要です。  
 Braille及び文字での地図表示は現在調整中です。画像描画に対応したターミナルを推奨します。
 
-画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。もちろん、インターネット接続も必要です。
+画像地図を表示するには、SixelまたはKittyの画像描画に対応したターミナルが必要です。
 
 作者が(画像描画含め)動作を確認した端末は次の3件です。
 
@@ -176,7 +175,9 @@ macOSは ~~作者が林檎信者ではないので~~ 実機確認ができてい
 
 ## 仕組みとデータ
 
-画面右上に接続先、最後の応答時刻（JST）、EEWと津波の状況を表示します。
+![TuiQuakeの仕組み。地震・緊急地震速報・津波情報の受信からターミナル表示まで](docs/media/tuiquake-architecture.png)
+
+画面右上に接続先、最後の応答時刻、EEWと津波の取得状況を表示します。
 
 ### 配信元
 
@@ -193,7 +194,6 @@ Wolfxが復旧すると、元の配信へ戻ります。
 - 配信元のサーバー時刻を基準に、発表から120秒未満の報を表示します。
 - 一度警報が出ると、同じ地震の予報が続いても赤い帯と警報対象地域が残ります。
 - 別の地震の速報が重なったときは、先に出た速報を画面上部に残します。`↑` `↓` で地図に表示する速報を選べます。
-- 警報の続報で対象地域を追加します。取消報を受けると警報表示を消します。
 - 地図は `V` で警報対象と推定震度を切り替えられます。推定震度は気象庁の配信値です。
 - 震度に幅があるときは上限を、下限だけが示されたときはその下限を地図の色に使います。受信した範囲は一覧で確認できます。
 - 速報概要の推定最大震度も、幅があるときは上限をバッジに使います。
@@ -201,7 +201,6 @@ Wolfxが復旧すると、元の配信へ戻ります。
 
 予報と警報の発表条件は、気象庁の解説を参照してください。 [緊急地震速報の発表基準](https://www.jma.go.jp/jma/kishou/know/jishin/eew/shikumi/shousai.html)
 
-地震動の予報業務許可の制度は、気象庁のFAQで確認できます。 [地震動の予報業務許可に関するFAQ](https://www.jma.go.jp/jma/kishou/minkan/q_a_s.html)
 
 ### 津波情報
 
@@ -215,7 +214,7 @@ Wolfxが復旧すると、元の配信へ戻ります。
 | 大津波警報 | 紫 |
 | 津波警報 | 赤 |
 | 津波注意報 | 黄 |
-| 津波予報 | 水色 |
+| 津波予報(若干の海面変動) | 水色 |
 
 ## ソースからビルド
 
@@ -257,17 +256,22 @@ Windows の PowerShell では `.\target\release\tuiquake.exe`、Linux / macOS �
 
 ### 地図に隙間が出る、文字の桁がずれる
 
-Windows Terminalで「設定 → 使用中のプロファイル → 外観 → フォント フェイス」を開き、まず既定の `Cascadia Mono` を選んでください。日本語の字形はターミナルが別のフォントで補います。 [Windows Terminalの外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
+Windows Terminalでは、「設定 → 使用中のプロファイル → 外観 → フォント フェイス」を開き、まず既定の `Cascadia Mono` を選んでください。日本語の字形はターミナルが別のフォントで補います。 [Windows Terminalの外観設定](https://learn.microsoft.com/ja-jp/windows/terminal/customize-settings/profile-appearance)
 
-日本語を含むフォントを指定するなら、インストール済みの `BIZ UDGothic` も選べます。`Noto Sans Mono CJK JP` は環境によってWindows Terminalで「非等幅フォント」と表示されます。 [BIZ UDGothicの情報](https://learn.microsoft.com/ja-jp/typography/font-list/biz-udgothic)
+日本語を含む等幅フォントも選べます。  
+[等幅フォント例]
+- **BIZ UDGothic** — Windowsでインストール済みなら、そのまま選べます。 [BIZ UDGothicの情報](https://learn.microsoft.com/ja-jp/typography/font-list/biz-udgothic)
+- **HackGen Console** — Windows Terminalで日本語と罫線を揃えたいときの候補です。半角と全角が1:2になる、名前に `35` が付かない版を選んでください。 [HackGenの公式配布](https://github.com/yuru7/HackGen/releases/latest)
+- **Noto Sans Mono CJK JP** — footで動作を確認しています。Windows Terminalでは「非等幅フォント」と表示され、表示が崩れます。 [Noto CJKの公式配布](https://github.com/notofonts/noto-cjk)
 
-### 画像地図が表示されない
+### 地図が「画像で」表示されない
 
-端末が Sixel または Kitty に対応しているか確認してください。設定画面の地図表示方法、もしくは`--map text` で文字地図を選べます。文字地図と Unicode Braille は現状非推奨(調整中)です。この2方式では観測点の震度は一覧に表示されます。
+ターミナルが Sixel または Kitty に対応しているか確認してください。設定画面の地図表示方法、もしくは`--map text` で文字地図を選べます。文字地図と Unicode Braille は現状非推奨(調整中)です。この2方式では観測点の震度は一覧に表示されます。
 
-### 不具合を報告する
+### 不具合を報告/新機能の提案
 
-「5 アプリ情報」で確認できるバージョン、端末、描画方式と、問題が出たときの操作を添えてください。 [GitHub Issues](https://github.com/hirokawa-beach/TuiQuake/issues)
+バグの報告や新機能の提案等々、大歓迎です！  
+バグ報告の場合は「5 アプリ情報」で確認できるバージョン、端末、描画方式と、問題が出たときの操作を添えてください。 [GitHub Issues](https://github.com/hirokawa-beach/TuiQuake/issues)
 
 ## English
 
@@ -307,11 +311,11 @@ TuiQuakeのオリジナルコードは [GNU General Public License v3.0](LICENSE
 <details>
 <summary>地図データの加工内容</summary>
 
-- `data/stations.json` には震度観測点一覧から抽出した名前と座標を収録しています。位置情報のない観測点は文字詳細に表示します。
-- `data/regions.json` には地震情報の細分区域の名称・コード・ポリゴンを収録しています。共有境界をまとめて簡略化し、細い隙間を補正しています。ごく小さな島の輪郭は省略しています。
-- `data/tsunami_coasts.json` には津波予報区の区域コードと沿岸線を収録しています。
-- `data/lakes.json` には、面積10 km²以上の湖沼の輪郭を簡略化して収録しています。整備時点と現在の湖岸線には差がある場合があります。
-- `data/surroundings.json` には、東経110〜159度・北緯18〜55度の陸地を収録しています。
+- `data/stations.json` には震度観測点一覧から抽出した名前と座標を収録。位置情報のない観測点は文字詳細に表示。
+- `data/regions.json` には地震情報の細分区域の名称・コード・ポリゴンを収録しています。共有境界をまとめて簡略化し、細い隙間を補正しています。ごく小さな島の輪郭は省略。
+- `data/tsunami_coasts.json` には津波予報区の区域コードと沿岸線を収録。
+- `data/lakes.json` には、面積10 km²以上の湖沼の輪郭を簡略化して収録。
+- `data/surroundings.json` には、東経110〜159度・北緯18〜55度の陸地を収録。
 
 元の地図と利用上の注意は公開元のページに記載されています。 [気象庁の予報区等GISデータ一覧][jma-gis]
 

@@ -1,12 +1,12 @@
 # TuiQuake
 
-<p><img src="docs/media/tuiquake-icon.png" alt="" width="144" align="middle"> <img src="docs/media/tuiquake-logo.svg" alt="TuiQuake" width="440" align="middle"></p>
+<p><img src="docs/media/tuiquake-icon.png" alt="" width="120" align="middle"> <img src="docs/media/tuiquake-logo.svg" alt="TuiQuake" width="368" align="middle"></p>
 
 日本の地震情報、緊急地震速報、津波情報をターミナルエミュレーター(以後ターミナルと呼ぶ)上で確認できます。
 
 [![CI](https://github.com/hirokawa-beach/TuiQuake/actions/workflows/ci.yml/badge.svg)](https://github.com/hirokawa-beach/TuiQuake/actions/workflows/ci.yml)
 [![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-3b769b)](LICENSE)
-[![Releases](https://img.shields.io/github/v/release/hirokawa-beach/TuiQuake?display_name=tag)](https://github.com/hirokawa-beach/TuiQuake/releases)
+[Releases](https://github.com/hirokawa-beach/TuiQuake/releases)
 
 > **非公式の閲覧用アプリです。** 配信や通信による遅延・欠落があります。防災時は気象庁・自治体の公式情報を確認してください。
 

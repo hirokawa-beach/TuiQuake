@@ -62,21 +62,21 @@ _表示している地震は過去のものです。_
 
 ## クイックスタート
 
-配布先は GitHub Releases です。OSとCPUに合うファイルを選んでください。 [ダウンロード](https://github.com/hirokawa-beach/TuiQuake/releases) · [ソースからビルド](#ソースからビルド)
+配布先は GitHub Releases です。OSとCPUに合うファイルを選んでください。以下は v0.1.0 のファイル名です。 [ダウンロード](https://github.com/hirokawa-beach/TuiQuake/releases) · [ソースからビルド](#ソースからビルド)
 
 ### Windows（MSI）
 
-`tuiquake-windows-x86_64.msi` を開いてインストールします。新しいターミナルで `tuiquake` と入力してください。削除する場合は、Windowsの「インストールされているアプリ」からアンインストールできます。
+`tuiquake-0.1.0-windows-x86_64.msi` を開いてインストールします。新しいターミナルで `tuiquake` と入力してください。削除する場合は、Windowsの「インストールされているアプリ」からアンインストールできます。
 
 > [!NOTE]
 > Windows向けの `.msi` と `.exe` は未署名です。起動時にMicrosoft Defender SmartScreenの警告が出る場合があります。 [SmartScreenの説明](https://learn.microsoft.com/en-us/windows/security/threat-protection/microsoft-defender-smartscreen/microsoft-defender-smartscreen-overview)
 
 ### Linux（Ubuntu・Debian向けの .deb）
 
-x86-64は `tuiquake-linux-x86_64.deb`、ARM64は `tuiquake-linux-aarch64.deb` をダウンロードします。保存先のフォルダで次を実行してください。コマンドがCPUに合うファイル名を選びます。
+x86-64は `tuiquake_0.1.0_amd64.deb`、ARM64は `tuiquake_0.1.0_arm64.deb` をダウンロードします。保存先のフォルダで次を実行してください。コマンドがCPUに合うファイル名を選びます。
 
 ```bash
-sudo apt install ./tuiquake-linux-$(uname -m).deb
+sudo apt install "./tuiquake_0.1.0_$(dpkg --print-architecture).deb"
 tuiquake
 ```
 
@@ -96,7 +96,7 @@ tuiquake
 <details>
 <summary>macOS用の .pkg を使う</summary>
 
-Intel Macは `tuiquake-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-macos-aarch64.pkg` を開きます。インストール後はターミナルで `tuiquake` と入力してください。
+Intel Macは `tuiquake-0.1.0-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-0.1.0-macos-aarch64.pkg` を開きます。インストール後はターミナルで `tuiquake` と入力してください。
 
 `.pkg` は未署名・未公証です。macOSに開くのを止められた場合はHomebrewを使えます。
 
@@ -107,10 +107,10 @@ Intel Macは `tuiquake-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-macos-
 
 ダウンロードしたファイルの保存先で起動します。Linux・macOSでは実行権限を付けてから起動します。
 
-- **Windows x86-64（PowerShell）** — `.\tuiquake-windows-x86_64.exe`
-- **Linux x86-64・ARM64** — `chmod +x ./tuiquake-linux-$(uname -m) && ./tuiquake-linux-$(uname -m)`
-- **macOS Intel** — `chmod +x ./tuiquake-macos-x86_64 && ./tuiquake-macos-x86_64`
-- **macOS Apple Silicon** — `chmod +x ./tuiquake-macos-aarch64 && ./tuiquake-macos-aarch64`
+- **Windows x86-64（PowerShell）** — `.\tuiquake-0.1.0-windows-x86_64.exe`
+- **Linux x86-64・ARM64** — `chmod +x ./tuiquake-0.1.0-linux-$(uname -m) && ./tuiquake-0.1.0-linux-$(uname -m)`
+- **macOS Intel** — `chmod +x ./tuiquake-0.1.0-macos-x86_64 && ./tuiquake-0.1.0-macos-x86_64`
+- **macOS Apple Silicon** — `chmod +x ./tuiquake-0.1.0-macos-aarch64 && ./tuiquake-0.1.0-macos-aarch64`
 
 </details>
 
@@ -118,7 +118,7 @@ Intel Macは `tuiquake-macos-x86_64.pkg`、Apple Silicon Macは `tuiquake-macos-
 
 配布ファイルと同じリリースの `SHA256SUMS.txt` を、同じフォルダに保存します。
 
-- **Windows（PowerShell）** — MSIなら `Get-FileHash -Algorithm SHA256 .\tuiquake-windows-x86_64.msi`、EXEなら `Get-FileHash -Algorithm SHA256 .\tuiquake-windows-x86_64.exe` を実行します。表示された値を `SHA256SUMS.txt` の同じファイル名の行と照合します。ハッシュの英字は大文字・小文字を区別しません。
+- **Windows（PowerShell）** — MSIなら `Get-FileHash -Algorithm SHA256 .\tuiquake-0.1.0-windows-x86_64.msi`、EXEなら `Get-FileHash -Algorithm SHA256 .\tuiquake-0.1.0-windows-x86_64.exe` を実行します。表示された値を `SHA256SUMS.txt` の同じファイル名の行と照合します。ハッシュの英字は大文字・小文字を区別しません。
 - **Linux** — `sha256sum --ignore-missing -c SHA256SUMS.txt`
 - **macOS** — `shasum -a 256 -c --ignore-missing SHA256SUMS.txt`
 

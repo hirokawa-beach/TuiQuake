@@ -41,6 +41,7 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
       - name: Test and build
+        id: build
         shell: bash
         env:
           SOURCE: ${{ matrix.source }}
@@ -53,26 +54,38 @@ jobs:
           cargo +stable test --locked
           cargo +stable build --release --locked
           "./$SOURCE" --help
+          version_output=$("./$SOURCE" --version)
+          if [[ ! $version_output =~ ^TuiQuake\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            printf 'Could not determine the release version from %s\n' "$version_output" >&2
+            exit 1
+          fi
+          version=${BASH_REMATCH[1]}
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            printf 'Tag %s does not match TuiQuake %s\n' "$GITHUB_REF_NAME" "$version" >&2
+            exit 1
+          fi
+
+          asset="tuiquake-$version-${ASSET#tuiquake-}"
           mkdir -p release-assets
-          cp "$SOURCE" "release-assets/$ASSET"
+          cp "$SOURCE" "release-assets/$asset"
+          printf 'version=%s\nasset=%s\n' "$version" "$asset" >> "$GITHUB_OUTPUT"
       - name: Build and test Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           DOTNET_ROLL_FORWARD: Major
+          VERSION: ${{ steps.build.outputs.version }}
+          ASSET: ${{ steps.build.outputs.asset }}
         run: |
           $wixTools = Join-Path $env:RUNNER_TEMP 'tuiquake-wix'
           dotnet tool install wix --version 6.0.2 --tool-path $wixTools
           if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed.' }
 
           $exe = (Resolve-Path 'target/release/tuiquake.exe').Path
-          $versionOutput = & $exe --version
-          if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^TuiQuake (\d+\.\d+\.\d+)$') {
-            throw "Could not determine the MSI version from $versionOutput"
-          }
-          $version = $Matches[1]
+          $version = $env:VERSION
+          $versionOutput = "TuiQuake $version"
           $rustNotice = Join-Path (rustc +stable --print sysroot) 'share/doc/rust/COPYRIGHT-library.html'
-          $msi = Join-Path (Resolve-Path 'release-assets').Path 'tuiquake-windows-x86_64.msi'
+          $msi = Join-Path (Resolve-Path 'release-assets').Path ([IO.Path]::ChangeExtension($env:ASSET, '.msi'))
           & (Join-Path $wixTools 'wix.exe') build -arch x64 -pdbtype none -d "Version=$version" -d "Executable=$exe" -d "RustNotice=$rustNotice" -o $msi installer/TuiQuake.wxs
           if ($LASTEXITCODE -ne 0) { throw 'MSI build failed.' }
 
@@ -107,12 +120,13 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         env:
-          ASSET: ${{ matrix.asset }}
+          VERSION: ${{ steps.build.outputs.version }}
         run: |
           set -euo pipefail
           rustup component add rust-docs --toolchain stable
           rust_notice="$(rustc +stable --print sysroot)/share/doc/rust/COPYRIGHT-library.html"
-          package="./release-assets/$ASSET.deb"
+          arch=$(dpkg --print-architecture)
+          package="./release-assets/tuiquake_${VERSION}_${arch}.deb"
           bash installer/build-deb.sh target/release/tuiquake "$package" "$rust_notice"
           sudo apt-get install -y "$package"
           trap 'sudo apt-get remove -y tuiquake' EXIT
@@ -122,16 +136,11 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         env:
-          ASSET: ${{ matrix.asset }}
+          VERSION: ${{ steps.build.outputs.version }}
+          ASSET: ${{ steps.build.outputs.asset }}
           SOURCE: ${{ matrix.source }}
         run: |
           set -euo pipefail
-          version_output=$("./$SOURCE" --version)
-          if [[ ! $version_output =~ ^TuiQuake\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "Could not determine the package version from $version_output" >&2
-            exit 1
-          fi
-          version="${BASH_REMATCH[1]}"
           rustup component add rust-docs --toolchain stable
           rust_notice="$(rustc +stable --print sysroot)/share/doc/rust/COPYRIGHT-library.html"
 
@@ -146,10 +155,10 @@ jobs:
           install -m 644 "$rust_notice" "$payload/$docs/RUST-STDLIB-NOTICES.html"
 
           package="release-assets/$ASSET.pkg"
-          pkgbuild --root "$payload" --install-location / --identifier io.github.hirokawabeach.tuiquake --version "$version" "$package"
+          pkgbuild --root "$payload" --install-location / --identifier io.github.hirokawabeach.tuiquake --version "$VERSION" "$package"
           pkgutil --expand-full "$package" "$work/expanded"
           diff -r "$payload" "$work/expanded/Payload"
-          test "$("$work/expanded/Payload/usr/local/bin/tuiquake" --version)" = "$version_output"
+          test "$("$work/expanded/Payload/usr/local/bin/tuiquake" --version)" = "TuiQuake $VERSION"
       - name: Test Homebrew installation
         if: runner.os == 'macOS' && github.ref_type == 'tag'
         shell: bash
@@ -198,7 +207,8 @@ jobs:
           cp LICENSE release-assets/LICENSE.txt
           cp THIRD_PARTY_NOTICES.txt release-assets/
           cd release-assets
-          sha256sum tuiquake-* > SHA256SUMS.txt
+          assets=(tuiquake[-_]*)
+          sha256sum "${assets[@]}" > SHA256SUMS.txt
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag --generate-notes \
-            tuiquake-* SHA256SUMS.txt LICENSE.txt THIRD_PARTY_NOTICES.txt RUST-STDLIB-NOTICES.html
+            "${assets[@]}" SHA256SUMS.txt LICENSE.txt THIRD_PARTY_NOTICES.txt RUST-STDLIB-NOTICES.html

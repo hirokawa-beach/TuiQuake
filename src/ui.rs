@@ -32,6 +32,7 @@ use crate::{
 };
 
 mod demo;
+mod examples;
 mod settings_menu;
 mod tsunami_tab;
 
@@ -461,6 +462,7 @@ pub struct App {
     eew_selection: Option<String>,
     tsunami: TsunamiTab,
     demo: DemoState,
+    examples: examples::Examples,
     release: Option<Release>,
 }
 
@@ -499,6 +501,7 @@ impl App {
             eew_selection: None,
             tsunami: TsunamiTab::default(),
             demo: DemoState::new(delay),
+            examples: examples::Examples::default(),
             release: None,
         }
     }
@@ -658,6 +661,16 @@ impl App {
             KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
             other => other,
         };
+        if self.examples.open {
+            return match self.examples.handle(key) {
+                examples::Action::None => false,
+                examples::Action::Redraw => true,
+                examples::Action::Replay => {
+                    self.change_tab(Tab::Demo);
+                    true
+                }
+            };
+        }
         match key {
             KeyCode::Char(digit @ '1'..='5') => {
                 self.change_tab(Tab::MENU[(digit as u8 - b'1') as usize]);
@@ -667,6 +680,7 @@ impl App {
             }
             KeyCode::Esc if self.tab == Tab::Demo && self.page == Page::Map => {
                 self.change_tab(Tab::Settings);
+                self.examples.open();
             }
             KeyCode::Enter if self.tab == Tab::About => return self.open_release_page(),
             KeyCode::Esc if self.tab == Tab::About => self.change_tab(Tab::Quake),
@@ -818,17 +832,6 @@ impl App {
                     data::set_demo_intensity(bulletin, next as u8);
                 }
             }
-            KeyCode::Char('z') => {
-                let view = self.map_view_mut();
-                *view = View::new(!view.national);
-            }
-            KeyCode::Char('+' | '=' | ';') => return self.map_view_mut().zoom_by(1),
-            KeyCode::Char('-') => return self.map_view_mut().zoom_by(-1),
-            KeyCode::Char('w') => return self.map_view_mut().pan(0.0, 0.18),
-            KeyCode::Char('a') => return self.map_view_mut().pan(-0.18, 0.0),
-            KeyCode::Char('s') => return self.map_view_mut().pan(0.0, -0.18),
-            KeyCode::Char('d') => return self.map_view_mut().pan(0.18, 0.0),
-            KeyCode::Char('0') => self.map_view_mut().reset(),
             KeyCode::Char('r') if matches!(self.tab, Tab::Quake | Tab::Tsunami) => {
                 let query = match self.tab {
                     Tab::Tsunami => LiveQuery::Tsunami,
@@ -842,7 +845,7 @@ impl App {
                     let _ = sender.send(query);
                 }
             }
-            _ => return false,
+            _ => return map_key(self.map_view_mut(), key),
         }
         true
     }
@@ -865,7 +868,7 @@ impl App {
     }
 
     pub fn update(&mut self, now: Instant) -> bool {
-        let mut changed = false;
+        let mut changed = self.examples.poll();
         let mut reports_changed = false;
         let mut eew_changed = false;
         let previous_eew = if self.tab == Tab::Eew {
@@ -1107,6 +1110,9 @@ impl App {
     }
 
     fn help_topic(&self, width: usize) -> HelpTopic {
+        if self.examples.open {
+            return HelpTopic::Examples;
+        }
         if self.page == Page::Text {
             let observations = self
                 .current()
@@ -1192,6 +1198,15 @@ impl App {
             }
         }
         let mut draw = |frame: &Frame| console.paint_layers(frame, overlay.as_ref());
+        if self.examples.open {
+            return Ok(self.examples.draw(
+                renderer,
+                display,
+                self.station_grouping,
+                overlay.is_none(),
+                draw,
+            )?);
+        }
         let items = self.menu_items();
         let mut menu = screen::menu_lines(&items, display);
         let feed_status = self.feed_status();
@@ -1333,7 +1348,7 @@ impl App {
                 } else {
                     "Space 再生"
                 };
-                &["↑↓ 選択", playback, "Esc 設定へ"]
+                &["↑↓ 選択", playback, "Esc 一覧へ"]
             }
             _ => &[],
         };
@@ -1527,6 +1542,21 @@ impl ResizeRedraw {
     }
 }
 
+fn map_key(view: &mut View, key: KeyCode) -> bool {
+    match key {
+        KeyCode::Char('z') => *view = View::new(!view.national),
+        KeyCode::Char('+' | '=' | ';') => return view.zoom_by(1),
+        KeyCode::Char('-') => return view.zoom_by(-1),
+        KeyCode::Char('w') => return view.pan(0.0, 0.18),
+        KeyCode::Char('a') => return view.pan(-0.18, 0.0),
+        KeyCode::Char('s') => return view.pan(0.0, -0.18),
+        KeyCode::Char('d') => return view.pan(0.18, 0.0),
+        KeyCode::Char('0') => view.reset(),
+        _ => return false,
+    }
+    true
+}
+
 pub fn run(
     client: Client,
     renderer: &mut Renderer,
@@ -1572,7 +1602,9 @@ pub fn run(
                             } else {
                                 key.code
                             };
-                            let in_settings = app.help_scroll.is_none() && app.tab == Tab::Settings;
+                            let in_settings = app.help_scroll.is_none()
+                                && app.tab == Tab::Settings
+                                && !app.examples.open;
                             changed |= if in_settings && settings.trial_key(code) {
                                 console.ring()?;
                                 settings.notice = Some(("端末ベルを送信しました", false));

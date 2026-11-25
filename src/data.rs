@@ -9,6 +9,7 @@ use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use serde_json::Value;
 
 const EARTHQUAKE_DETAIL: &str = "https://api.wolfx.jp/jma_earthquake_detail.json";
+pub mod examples;
 mod feeds;
 mod p2p;
 mod socket;

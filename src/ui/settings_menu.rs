@@ -37,7 +37,7 @@ impl Field {
             Self::Grouping => "観測点のまとめ方",
             Self::History => "地震履歴の行数",
             Self::Bell => "EEWの端末ベル",
-            Self::Demo => "EEWデモ",
+            Self::Demo => "デモ",
         }
     }
 
@@ -61,7 +61,7 @@ impl Field {
             }
             Self::History => "履歴を指定した行数まで表示します。",
             Self::Bell => "Enterで試し鳴らし。ベルの音は端末の設定に従います。",
-            Self::Demo => "架空の緊急地震速報を再生できます。",
+            Self::Demo => "Wolfxの応答例や架空のEEWリプレイを開きます。",
         }
     }
 
@@ -242,7 +242,7 @@ impl SettingsMenu {
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.selected = last,
             KeyCode::Enter if Field::ALL[self.selected] == Field::Demo => {
-                app.change_tab(Tab::Demo);
+                app.examples.open();
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(next) = self.next_value(key, capabilities) {
@@ -338,7 +338,7 @@ mod tests {
             assert!(frame.text.contains("文字 非推奨"));
             assert!(frame.text.contains("使用中  Sixel"));
             assert!(frame.text.contains("保存しました"));
-            assert!(frame.text.contains("EEWデモ"));
+            assert!(frame.text.contains("デモ"));
             assert!(frame.text.contains("Enter 開く"));
             assert!(!frame.text.contains("保存して適用"));
             assert!(frame.text.lines().count() <= display.rows);
@@ -421,6 +421,8 @@ mod tests {
         assert!(menu.handle(KeyCode::End, &mut app, &mut map, &capabilities));
         assert!(!menu.trial_key(KeyCode::Enter));
         assert!(menu.handle(KeyCode::Enter, &mut app, &mut map, &capabilities));
+        assert!(app.examples.open);
+        assert!(app.select(KeyCode::Enter, 80, now));
         assert_eq!(app.tab, Tab::Demo);
         assert_eq!(app.tab.menu_tab(), Tab::Settings);
         assert!(app.select(KeyCode::Char(' '), 80, now));
@@ -428,7 +430,10 @@ mod tests {
         assert!(app.select(KeyCode::Esc, 80, now));
         assert_eq!(app.tab, Tab::Settings);
         assert!(app.demo.next.is_none());
-        assert_eq!(Field::ALL[menu.selected].label(), "EEWデモ");
+        assert!(app.examples.open);
+        assert!(app.select(KeyCode::Esc, 80, now));
+        assert!(!app.examples.open);
+        assert_eq!(Field::ALL[menu.selected].label(), "デモ");
         assert!(menu.notice.is_none());
     }
 }

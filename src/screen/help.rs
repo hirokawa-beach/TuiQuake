@@ -20,6 +20,7 @@ pub enum HelpTopic {
         eew: bool,
     },
     Settings,
+    Examples,
     About {
         update_available: bool,
     },
@@ -108,18 +109,29 @@ impl HelpTopic {
                 bindings.extend([
                     ("I", "文字詳細を開く"),
                     ("R", "デモを初期化"),
-                    ("Esc", "設定へ戻る"),
+                    ("Esc", "デモ一覧へ戻る"),
                 ]);
                 bindings.extend(MAP_BINDINGS);
                 ("デモの操作", bindings)
             }
+            Self::Examples => (
+                "Wolfx API例の操作",
+                vec![
+                    ("↑ / ↓", "例を選ぶ・スクロール"),
+                    ("Enter", "選んだ例を開く"),
+                    ("I", "受け取ったJSONを表示"),
+                    ("V", "地震・EEWの地図表示を切り替え"),
+                    ("R", "読み込みに失敗した例を再試行"),
+                    ("Esc", "前の画面へ戻る"),
+                ],
+            ),
             Self::Settings => (
                 "設定の操作",
                 vec![
                     ("↑ / ↓", "項目を選ぶ"),
                     ("← / →", "前・次の選択肢に変更して自動保存"),
                     ("Space", "次の選択肢に変更して自動保存"),
-                    ("Enter", "EEWデモを開く・ベルを試す・次の値に進む"),
+                    ("Enter", "デモを開く・ベルを試す・次の値に進む"),
                     ("Home / End", "先頭・末尾の項目へ移動"),
                     ("Esc", "地震タブへ戻る"),
                 ],

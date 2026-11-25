@@ -33,7 +33,7 @@
 
 <a href="docs/media/earthquakes-regions.png"><img src="docs/media/earthquakes-regions.png" alt="令和8年熊本地震の地域別表示。各区域の最大震度を色と数字で表示。" width="760"></a>
 
-_表示している地震は過去のもの(令和8年熊本地震)です。_
+_表示している地震は過去のものです。
 
 **参考資料**　[気象庁の震度データベース](https://www.data.jma.go.jp/eqdb/data/shindo/index.html#20260728162715) / [令和8年熊本地震ポータル](https://www.jma.go.jp/jma/menu/20260728_kumamoto_jishin.html) / [気象庁の区域一覧](https://www.jma.go.jp/jma/kishou/know/jishin/joho/shindo-name.html)
 
@@ -49,7 +49,11 @@ _表示している地震は過去のもの(令和8年熊本地震)です。_
 <details>
 <summary>令和8年熊本地震のEEWを再生（第24報まで）</summary>
 
-https://github.com/user-attachments/assets/9dc57404-89aa-48c5-88ef-92d079bdc0ee
+<a href="docs/media/eew-demo.mp4"><img src="docs/media/eew-demo-preview.png" alt="令和8年熊本地震の緊急地震速報。第5報の警報対象地域と推定震度を表示。" width="760"></a>
+
+[EEWの再生動画を開く（MP4・約32秒）](docs/media/eew-demo.mp4)
+
+[気象庁の予報記録](https://ds.data.jma.go.jp/eew/data/nc/fc_hist/2026/07/20260728162718/index.html) · [気象庁の警報記録](https://www.data.jma.go.jp/eew/data/nc/pub_hist/2026/07/20260728162718/reachtime/reachtime.html)
 
 </details>
 

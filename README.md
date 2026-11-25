@@ -49,9 +49,11 @@ _表示している地震は過去のものです。
 <details>
 <summary>令和8年熊本地震のEEWを再生（第24報まで）</summary>
 
-<a href="docs/media/eew-demo.mp4"><img src="docs/media/eew-demo-preview.png" alt="令和8年熊本地震の緊急地震速報。第5報の警報対象地域と推定震度を表示。" width="760"></a>
+<a href="docs/media/eew-demo.mp4"><img src="docs/media/eew-demo-preview.png" alt="令和8年熊本地震の緊急地震速報。警報対象地域とP波・S波の推定波面を表示。" width="760"></a>
 
 [EEWの再生動画を開く（MP4・約32秒）](docs/media/eew-demo.mp4)
+
+水色のP波面とピンクのS波面は、気象庁の発表記録とJMA2001走時表を使って再現しています。
 
 [気象庁の予報記録](https://ds.data.jma.go.jp/eew/data/nc/fc_hist/2026/07/20260728162718/index.html) · [気象庁の警報記録](https://www.data.jma.go.jp/eew/data/nc/pub_hist/2026/07/20260728162718/reachtime/reachtime.html)
 

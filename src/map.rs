@@ -27,9 +27,10 @@ const TSUNAMI_MAJOR_WARNING: Color = 26;
 pub const TEXT_CELL_WIDTH: usize = 4;
 pub const TEXT_CELL_HEIGHT: usize = 8;
 pub(crate) const SHORT_INTENSITIES: [&str; 9] = ["1", "2", "3", "4", "5-", "5+", "6-", "6+", "7"];
-pub const P_WAVE: Color = 27;
-pub const S_WAVE: Color = 28;
-pub const PALETTE: [Rgb; 29] = [
+const S_WAVE_OUTLINE: Color = 27;
+pub const P_WAVE: Color = 28;
+pub const S_WAVE: Color = 29;
+pub const PALETTE: [Rgb; 30] = [
     (15, 27, 42),
     (54, 91, 98),
     (36, 55, 66),
@@ -57,6 +58,7 @@ pub const PALETTE: [Rgb; 29] = [
     (255, 222, 94),
     (255, 74, 83),
     (195, 95, 255),
+    (27, 13, 42),
     (85, 213, 252),
     (246, 104, 207),
 ];
@@ -579,7 +581,7 @@ impl Atlas {
         }
         self.draw_base(raster, extent, colors.into_iter(), image);
         if let Some((wavefront, center)) = view.wavefront.zip(bulletin.epicenter) {
-            raster.draw_wavefront(center, wavefront, extent);
+            raster.draw_wavefront(center, wavefront, extent, image);
         }
         if image && layer == Layer::Stations {
             for point in bulletin.stations.iter().rev() {
@@ -963,7 +965,7 @@ pub fn rgb(out: &mut String, (r, g, b): Rgb, background: bool) {
 
 pub fn plain(color: Color) -> char {
     match color {
-        SEA => ' ',
+        SEA | S_WAVE_OUTLINE => ' ',
         LAND => '░',
         SURROUNDINGS => '·',
         WARNING => '█',

@@ -1,4 +1,4 @@
-use super::{Extent, Location, P_WAVE, Raster, S_WAVE, project, travel_times};
+use super::{Extent, Location, P_WAVE, Raster, S_WAVE, S_WAVE_OUTLINE, project, travel_times};
 
 // Constant-speed teaching model for the fictional demo.
 const EARTH_RADIUS_KM: f64 = 6371.0;
@@ -30,6 +30,7 @@ impl Raster {
         center: Location,
         wavefront: Wavefront,
         extent: Extent,
+        image: bool,
     ) {
         let (sin_lat, cos_lat) = center.lat.to_radians().sin_cos();
         for (radius, color) in wavefront.0.into_iter().zip([P_WAVE, S_WAVE]) {
@@ -55,6 +56,9 @@ impl Raster {
             let mut from = point(0);
             for bearing in 1..=360 {
                 let to = point(bearing);
+                if image && color == S_WAVE {
+                    self.stroke_line(from, to, 1, S_WAVE_OUTLINE);
+                }
                 self.stroke_line(from, to, 0, color);
                 from = to;
             }
@@ -86,8 +90,10 @@ mod tests {
                 north: y + 2.0,
                 step: 0.01,
             },
+            true,
         );
         assert!(raster.pixels.contains(&P_WAVE));
         assert!(raster.pixels.contains(&S_WAVE));
+        assert!(raster.pixels.contains(&S_WAVE_OUTLINE));
     }
 }
